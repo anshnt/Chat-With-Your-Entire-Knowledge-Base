@@ -15,6 +15,9 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from kb.models import (
+    Answer,
+    AnswerCitation,
+    AnswerSentence,
     Chunk,
     CollectionStats,
     Document,
@@ -49,7 +52,7 @@ class Citation(BaseModel):
             document_id=chunk.document_id,
             document_title=chunk.document_title,
             source_type=chunk.source_type,
-            label=chunk.locator.label(),
+            label=chunk.position_label(),
             deep_link=chunk.deep_link(),
             locator=chunk.locator.model_dump(mode="json"),
             snippet=snippet,
@@ -223,6 +226,8 @@ class HealthResponse(BaseModel):
     embedding_dim: int
     retrieval_strategy: str
     reranker: str | None = None
+    generator: str = ""
+    generation_model: str = ""
     connectors: list[str] = Field(default_factory=list)
 
 
@@ -230,3 +235,86 @@ class ErrorResponse(BaseModel):
     code: str
     message: str
     details: dict[str, Any] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
+# Answering
+# --------------------------------------------------------------------------- #
+
+
+class AskRequest(BaseModel):
+    """A question, plus optional retrieval overrides.
+
+    Every retrieval knob is exposed here on purpose: comparing answers under
+    different retrieval settings is how you find out whether a disappointing
+    answer is a generation problem or a retrieval one.
+    """
+
+    query: str = Field(min_length=1, max_length=4000)
+    collection: str = "default"
+    top_k: int | None = Field(default=None, ge=1, le=50)
+    candidate_k: int | None = Field(default=None, ge=1, le=500)
+    strategy: RetrievalStrategy | None = None
+    fusion: FusionMethod | None = None
+    rerank: bool | None = None
+    use_mmr: bool | None = None
+    source_types: list[SourceType] | None = None
+    document_ids: list[str] | None = None
+    include_retrieval: bool = Field(
+        default=True, description="Include the full retrieval diagnostics in the response"
+    )
+
+
+class AskResponse(BaseModel):
+    """An answer, its citations, and the evidence for trusting it."""
+
+    query: str
+    answer: str
+    citations: list[AnswerCitation] = Field(default_factory=list)
+    sentences: list[AnswerSentence] = Field(default_factory=list)
+    generator: str
+    model: str
+    refused: bool = False
+    verified: bool = False
+    faithfulness: float | None = None
+    unsupported_count: int = 0
+    context_chunks: int = 0
+    context_tokens: int = 0
+    timings_ms: dict[str, float] = Field(default_factory=dict)
+    total_ms: float = 0.0
+    retrieval: SearchResponse | None = None
+
+    @classmethod
+    def from_answer(cls, answer: Answer, *, include_retrieval: bool = True) -> AskResponse:
+        retrieval: SearchResponse | None = None
+        if include_retrieval and answer.retrieval is not None:
+            result = answer.retrieval
+            retrieval = SearchResponse(
+                query=result.query,
+                hits=[SearchHit.from_scored(r) for r in result.results],
+                strategy=result.strategy,
+                fusion=result.fusion,
+                reranked=result.reranked,
+                lexical_candidates=result.lexical_candidates,
+                dense_candidates=result.dense_candidates,
+                fused_candidates=result.fused_candidates,
+                timings_ms=result.timings_ms,
+                total_ms=result.total_ms(),
+            )
+        return cls(
+            query=answer.query,
+            answer=answer.text,
+            citations=answer.citations,
+            sentences=answer.sentences,
+            generator=answer.generator,
+            model=answer.model,
+            refused=answer.refused,
+            verified=answer.verified,
+            faithfulness=answer.faithfulness,
+            unsupported_count=len(answer.unsupported_sentences()),
+            context_chunks=answer.context_chunks,
+            context_tokens=answer.context_tokens,
+            timings_ms=answer.timings_ms,
+            total_ms=answer.total_ms(),
+            retrieval=retrieval,
+        )

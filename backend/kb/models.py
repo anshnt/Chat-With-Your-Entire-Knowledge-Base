@@ -342,19 +342,23 @@ class Chunk(BaseModel):
     def deep_link(self) -> str | None:
         return self.locator.deep_link()
 
-    def citation_label(self) -> str:
-        """``Design Doc — p. 4``: what a citation chip shows.
+    def position_label(self) -> str:
+        """Position within the document, with a redundant title prefix removed.
 
         A leading heading identical to the document title is dropped, because
         "Design Doc — Design Doc › Retrieval" reads as a bug even though both
         halves are correct.
         """
         pos = self.locator.label()
-        if not pos:
-            return self.document_title
         title = self.document_title.strip()
-        if title and pos.startswith(title):
+        if pos and title and pos.startswith(title):
             pos = pos[len(title) :].lstrip(" ›").strip()
+        return pos
+
+    def citation_label(self) -> str:
+        """``Design Doc — p. 4``: what a citation chip shows."""
+        pos = self.position_label()
+        title = self.document_title.strip()
         return f"{title} — {pos}" if pos else title
 
 
@@ -472,6 +476,115 @@ class RetrievalResult(BaseModel):
     @property
     def chunks(self) -> list[Chunk]:
         return [r.chunk for r in self.results]
+
+    def total_ms(self) -> float:
+        return round(sum(self.timings_ms.values()), 2)
+
+
+# --------------------------------------------------------------------------- #
+# Answers
+# --------------------------------------------------------------------------- #
+
+
+class AnswerCitation(BaseModel):
+    """A source the answer cites, resolved to a clickable position.
+
+    ``marker`` is the number the reader sees in the text (``[2]``). It indexes
+    the prompt's source list, not the corpus — the model is never shown a chunk
+    id, because it will happily invent one that looks plausible.
+    """
+
+    marker: int = Field(ge=1, description="The [n] shown in the answer text")
+    chunk_id: str
+    document_id: str
+    document_title: str
+    label: str = Field(description="Position within the source, e.g. 'p. 12'")
+    deep_link: str | None = None
+    snippet: str = ""
+    source_type: SourceType | None = None
+
+    @classmethod
+    def from_chunk(cls, marker: int, chunk: Chunk, *, snippet_chars: int = 320) -> AnswerCitation:
+        body = chunk.text.strip()
+        return cls(
+            marker=marker,
+            chunk_id=chunk.id,
+            document_id=chunk.document_id,
+            document_title=chunk.document_title,
+            label=chunk.position_label(),
+            deep_link=chunk.deep_link(),
+            snippet=body if len(body) <= snippet_chars else f"{body[:snippet_chars].rstrip()}…",
+            source_type=chunk.source_type,
+        )
+
+
+class SupportVerdict(str, Enum):
+    """Whether a cited source actually backs the claim it is attached to."""
+
+    SUPPORTED = "supported"
+    PARTIAL = "partial"
+    UNSUPPORTED = "unsupported"
+    UNCITED = "uncited"
+    """The sentence makes a factual claim but cites nothing."""
+
+    NOT_A_CLAIM = "not_a_claim"
+    """Framing, transitions, questions — nothing to verify."""
+
+
+class AnswerSentence(BaseModel):
+    """One sentence of an answer, with the citations attached to it.
+
+    Sentence-level granularity is what makes verification meaningful: an answer
+    is not uniformly true or false, and "paragraph 2 is unsupported" is not
+    actionable while "this clause is unsupported" is.
+    """
+
+    text: str
+    citation_markers: list[int] = Field(default_factory=list)
+    char_start: int = 0
+    char_end: int = 0
+    # Filled in by the verification stage.
+    support_score: float | None = None
+    verdict: SupportVerdict | None = None
+    supporting_quote: str | None = None
+    verification_note: str | None = None
+
+    @property
+    def is_cited(self) -> bool:
+        return bool(self.citation_markers)
+
+
+class Answer(BaseModel):
+    """A generated answer, its sources, and the evidence for trusting it."""
+
+    query: str
+    text: str
+    citations: list[AnswerCitation] = Field(default_factory=list)
+    sentences: list[AnswerSentence] = Field(default_factory=list)
+    generator: str = ""
+    model: str = ""
+    context_chunks: int = 0
+    context_tokens: int = 0
+    refused: bool = Field(
+        default=False, description="True when the context did not support an answer"
+    )
+    faithfulness: float | None = Field(
+        default=None, description="Share of claim sentences that are supported"
+    )
+    verified: bool = False
+    timings_ms: dict[str, float] = Field(default_factory=dict)
+    retrieval: RetrievalResult | None = None
+
+    def citation_for(self, marker: int) -> AnswerCitation | None:
+        return next((c for c in self.citations if c.marker == marker), None)
+
+    def unsupported_sentences(self) -> list[AnswerSentence]:
+        """Sentences a reader should not take on trust."""
+        return [
+            s
+            for s in self.sentences
+            if s.verdict in (SupportVerdict.UNSUPPORTED, SupportVerdict.UNCITED)
+        ]
 
     def total_ms(self) -> float:
         return round(sum(self.timings_ms.values()), 2)

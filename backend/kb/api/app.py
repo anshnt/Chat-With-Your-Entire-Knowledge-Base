@@ -96,6 +96,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             reranker=(
                 getattr(knowledge_base.reranker, "name", None) if knowledge_base.reranker else None
             ),
+            generator=knowledge_base.generator.name,
+            generation_model=knowledge_base.generator.model,
             connectors=knowledge_base.registry.names(),
         )
 

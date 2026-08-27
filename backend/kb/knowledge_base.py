@@ -9,15 +9,18 @@ retrieval benchmark is worth anything.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from kb.config import Settings, get_settings
 from kb.embeddings import build_embedder
 from kb.embeddings.base import Embedder
+from kb.generate import Generator, build_generator
 from kb.ingest.pipeline import IngestionPipeline
 from kb.ingest.registry import ConnectorRegistry, default_registry
 from kb.models import (
+    Answer,
     Chunk,
     CollectionStats,
     Document,
@@ -44,6 +47,7 @@ class KnowledgeBase:
         embedder: Embedder | None = None,
         registry: ConnectorRegistry | None = None,
         reranker: Reranker | None = None,
+        generator: Generator | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.settings.ensure_dirs()
@@ -51,6 +55,7 @@ class KnowledgeBase:
         self.embedder = embedder or build_embedder(self.settings)
         self.registry = registry or default_registry(self.settings)
         self.reranker = reranker if reranker is not None else self._build_reranker()
+        self.generator = generator or build_generator(self.settings)
         self.pipeline = IngestionPipeline(
             self.store, self.embedder, self.settings, registry=self.registry
         )
@@ -127,6 +132,38 @@ class KnowledgeBase:
         self, chunk_id: str, *, collection: str = "default", limit: int = 10
     ) -> list[ScoredChunk]:
         return self.retriever.dense.similar_to_chunk(chunk_id, collection=collection, limit=limit)
+
+    # ------------------------------------------------------------------ #
+    # answering
+    # ------------------------------------------------------------------ #
+
+    def ask(self, query: str, **overrides: Any) -> Answer:
+        """Retrieve, then answer with citations resolved to source positions.
+
+        Retrieval overrides are passed straight through, so an answer can be
+        produced under any retrieval configuration — which is what lets the
+        evaluation harness compare end-to-end answer quality across retrieval
+        settings rather than only comparing rankings.
+        """
+        result = self.search(query, **overrides)
+        answer = self.generator.generate(query, result.results, retrieval=result)
+        answer.timings_ms.update({f"retrieval_{k}": v for k, v in result.timings_ms.items()})
+        return answer
+
+    def ask_stream(self, query: str, **overrides: Any) -> Iterator[tuple[str, Answer | None]]:
+        """Stream an answer: ``(delta, None)`` while generating, then ``("", answer)``.
+
+        Citations are only resolvable once the text is complete — a marker may be
+        half-emitted — so they arrive with the terminal event rather than being
+        patched in mid-stream.
+        """
+        result = self.search(query, **overrides)
+        for delta, answer in self.generator.stream(query, result.results, retrieval=result):
+            if answer is not None:
+                answer.timings_ms.update(
+                    {f"retrieval_{k}": v for k, v in result.timings_ms.items()}
+                )
+            yield delta, answer
 
     # ------------------------------------------------------------------ #
     # corpus inspection
