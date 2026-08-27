@@ -383,3 +383,89 @@ once. Citations cannot be resolved until the text is complete — a marker may b
 mid-emission — so the finished answer with its citations arrives as a separate
 terminal event rather than being patched in as it goes. The SSE endpoint maps
 that directly onto `delta` / `done` / `error` events.
+
+## Citation verification
+
+A citation nobody checked is decoration. The failure this stage exists to catch
+is not a model inventing nonsense — it is a model *correctly completing a fact
+that is not in the corpus* and attaching a citation to a chunk that does not say
+it. The answer reads perfectly, the chip links to a real page, and the claim is
+unsourced. No amount of retrieval quality prevents that; only checking does.
+
+Verdicts are per **sentence**, because an answer is not uniformly true or false,
+and "paragraph 2 is unsupported" is not actionable while "this clause is
+unsupported" is. That granularity is also why the generation layer takes care to
+attach citation markers to the sentence they follow — a misattributed marker
+would make every verdict meaningless.
+
+### Faithfulness
+
+The share of *claim* sentences that come out supported. `not_a_claim` sentences
+are excluded from the denominator: counting "Here is what the sources say:" as a
+verified fact would inflate the score, and a metric you can raise by adding
+filler is worthless. Claim classification is deliberately conservative —
+over-classifying prose as a claim only makes the score stricter, while
+under-classifying hides real failures.
+
+A refusal scores `None`, not zero. Punishing the system for correctly declining
+to answer would push it toward answering anyway, which is the opposite of what
+this stage is for.
+
+### The offline verifier
+
+Textual entailment is the right frame, but a full NLI model is a large dependency
+for a check that runs on every sentence of every answer. The lexical verifier
+approximates the useful part and is explicit about its limits:
+
+1. **IDF-weighted content coverage** of the claim against the chunk, with IDF
+   computed over the chunk's own sentences — a word appearing in every sentence
+   carries little evidence that *this* sentence is supported.
+2. **Best-sentence alignment**, which becomes the `supporting_quote`.
+3. **Number agreement**, the highest-value check in the file. The characteristic
+   RAG failure is a fluent paraphrase with a wrong figure: "defaults to 50" cited
+   to a chunk saying 60 scores near-perfectly on word overlap and is exactly the
+   error a reader cannot spot. The check is *sentence-scoped*, not chunk-scoped,
+   because a chunk-level check passes a claim of "50" against a chunk that says
+   "defaults to 60" and, separately, "recall at 50" — a real case, found by
+   writing a test fixture that accidentally contained the decoy.
+4. **Negation agreement**. A claim and a chunk that disagree on negation share
+   almost all their words, so without this a flat contradiction reads as strongly
+   supported. Contrast is distinguished from negation: "combines ranks, **not**
+   raw scores" and "combines ranks **rather than** raw scores" mean the same
+   thing, and a keyword check calls them contradictory. Contrastive
+   constructions are stripped first, then negation is detected only where it
+   attaches to a verb (`does not support`) or is inherently negative (`never`,
+   `cannot`, `without`, `fails to`).
+
+**Gates, not scores.** A number contradiction or a negation flip caps the support
+score below the unsupported boundary rather than merely subtracting from it. Some
+signals are dispositive: the claim is wrong however well the rest of its words
+line up, and that guarantee should not depend on the threshold a caller picks.
+
+What it cannot catch: a claim that is a genuine semantic inference from the
+chunk, and a paraphrase with no lexical overlap. Both push the score *down*, so
+the failure mode is a false "unsupported" rather than a false "supported" — the
+safe direction, and the reason falling back to this verifier when a hosted judge
+is unavailable makes the check stricter rather than laxer.
+
+### The LLM judge
+
+The prompt asks a strict entailment question — *"does this text state this claim,
+or can it be deduced directly from it?"* — not "is this a good citation?". A
+model asked to judge quality rates plausible claims highly; consistency with the
+source is exactly the failure being hunted.
+
+Three prompt decisions carry most of the reliability:
+
+- **A supporting quote is required.** Forcing the judge to point at a sentence
+  suppresses "yes, because it seems right". If it cannot quote, it cannot claim
+  support.
+- **The default is no.** Uncertainty resolves to unsupported. A verifier that
+  guesses "supported" is worse than none, because it launders the exact failure it
+  was added to catch. An unparseable reply is likewise treated as unsupported.
+- **Numbers are called out explicitly**, for the reason above.
+
+Multiple markers on one sentence mean "any of these supports it", so support is
+aggregated with `max` — not the mean, which would punish a correct citation for
+being listed beside a weaker one. The judge loop short-circuits on a confident
+yes, keeping the common case to one call.

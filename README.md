@@ -11,7 +11,7 @@ are the ones a demo skips:
 |---|---|---|
 | **Hybrid search** | BM25 (SQLite FTS5) fused with dense cosine retrieval via Reciprocal Rank Fusion | Dense retrieval alone misses exact identifiers, error codes and rare terms; BM25 alone misses paraphrase. The chunk BM25 ranks 40th and the vectors rank 35th is often the right answer — and invisible to either at k=8 |
 | **Reranking** | Four providers behind one interface: offline cross-feature, local cross-encoder, hosted (Cohere/Voyage), listwise LLM | Fusion optimises recall at k=50; the generator sees k=8. Reranking converts that recall into precision — and gives *discriminative* scores where RRF's are compressed |
-| **Citation verification** | Every answer sentence is checked against the chunk it cites, and unsupported claims are flagged | A citation nobody verified is decoration. This turns "trust me" into a measurable per-claim support score |
+| **Citation verification** | Every answer sentence is checked against the chunk it cites; wrong figures, contradictions and uncited claims are flagged | A citation nobody checked is decoration. Catches the failure that matters: a fluent paraphrase with a wrong number, cited to a real page |
 | **Retrieval evaluation** | Recall@k, Precision@k, MRR, MAP, nDCG@k over a golden set, with config sweeps | Without it, every retrieval change is a vibe. With it, "hybrid beats dense" is a number you can reproduce |
 | **Document visualization** | 2D projection of the corpus, clustering, and a retrieval heatmap | Shows what the knowledge base actually contains, and which parts of it ever get used |
 
@@ -112,6 +112,70 @@ overlapping chunks.
 
 Streaming is available over SSE at `POST /api/ask/stream`; citations arrive with
 the terminal `done` event, since a marker can be half-emitted mid-stream.
+
+## Citation verification
+
+The failure this exists to catch is not a model inventing nonsense. It is a model
+**correctly completing a fact that is not in the corpus** and attaching a
+citation to a chunk that does not say it. The answer reads perfectly, the chip
+links to a real page, and the claim is unsourced. No amount of retrieval quality
+prevents that — only checking does.
+
+So every sentence of the answer is checked against the chunk it cites, and the
+verdict is reported *per sentence*, because an answer is not uniformly true or
+false:
+
+| Verdict | Meaning |
+|---|---|
+| `supported` | The cited chunk states the claim |
+| `partial` | The chunk is related but does not fully state it |
+| `unsupported` | The chunk does not support the claim — the citation is wrong |
+| `uncited` | The sentence makes a factual claim and cites nothing |
+| `not_a_claim` | Framing, transitions, questions — nothing to verify |
+
+Real output from the offline verifier against a source that says *"The damping
+constant k defaults to 60"*:
+
+| Claim | Verdict | Score | Why |
+|---|---|---|---|
+| …defaults to 60. `[1]` | `supported` | 1.00 | quotes the source sentence |
+| …defaults to **50**. `[1]` | `unsupported` | 0.12 | *"the supporting sentence states a different figure: claim says 50, source says 60"* |
+| …defaults to **77**. `[1]` | `unsupported` | 0.08 | figure absent from the source entirely |
+| A reranker **does not** support joint scoring. `[1]` | `unsupported` | 0.12 | claim and source disagree on negation |
+| …defaults to 60 in every implementation. | `uncited` | 0.00 | a factual claim citing nothing |
+| Here is what the sources say: | `not_a_claim` | — | excluded from scoring |
+
+`faithfulness` is the share of *claim* sentences that come out supported.
+`not_a_claim` sentences are excluded from the denominator — a faithfulness metric
+you can raise by adding filler is worthless.
+
+### What the offline verifier actually checks
+
+No API key, no NLI model, deterministic:
+
+1. **IDF-weighted content coverage** of the claim against the chunk.
+2. **Best-sentence alignment**, which becomes the `supporting_quote`.
+   Verification without a quote is an opinion; with one, a reader checks it in a
+   glance.
+3. **Number agreement** — the highest-value check here, because the
+   characteristic RAG failure is a fluent paraphrase with a wrong figure, and it
+   scores near-perfectly on word overlap. Sentence-scoped, not chunk-scoped: a
+   claim of "50" against a chunk that says "defaults to 60" *and*, elsewhere,
+   "recall at 50" is still caught.
+4. **Negation agreement** — a claim and a chunk that disagree on negation share
+   almost every word. Contrast is distinguished from negation, so "combines
+   ranks, **not** raw scores" and "combines ranks **rather than** raw scores" are
+   correctly read as agreeing.
+
+Number contradictions and negation flips are treated as **gates, not scores**:
+they cap the support score below the unsupported boundary, so a wrong figure
+stays unsupported however lenient your threshold.
+
+What it cannot catch: a genuine semantic inference, and a paraphrase with no
+lexical overlap. Both push the score *down*, so the failure mode is a false
+"unsupported" rather than a false "supported" — the safe direction. Set
+`KB_VERIFY_PROVIDER=llm` for a strict entailment judge that is required to quote
+its evidence and defaults to "no" when unsure.
 
 ## Reranking
 
@@ -222,6 +286,9 @@ KB_RERANK_TOP_N=30                # candidates handed to the reranker
 
 KB_GENERATION_PROVIDER=anthropic  # extractive (default, offline) | anthropic | openai
 KB_CONTEXT_TOKEN_BUDGET=6000      # tokens of retrieved context in the prompt
+
+KB_VERIFY_PROVIDER=llm            # lexical (default, offline) | llm | none
+KB_VERIFICATION_THRESHOLD=0.5     # support score below which a claim is unsupported
 ```
 
 ## Development

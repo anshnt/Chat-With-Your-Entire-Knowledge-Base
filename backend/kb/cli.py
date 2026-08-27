@@ -315,6 +315,10 @@ def ask(
     show_context: Annotated[
         bool, typer.Option("--context", help="Print the retrieval that fed the answer")
     ] = False,
+    verify: Annotated[
+        bool | None,
+        typer.Option("--verify/--no-verify", help="Check each claim against its cited source"),
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Machine-readable output")] = False,
 ) -> None:
     """Ask a question and get an answer with citations.
@@ -332,6 +336,7 @@ def ask(
             rerank=rerank,
             use_mmr=mmr or None,
             source_types=list(source_type) if source_type else None,
+            verify=verify,
         )
     except KBError as exc:
         _fail(exc)
@@ -362,6 +367,16 @@ def ask(
     if answer.refused:
         console.print("[yellow]the sources did not cover this question[/]")
 
+    flagged = answer.flagged_sentences()
+    if flagged:
+        console.print("[bold yellow]claims to check before trusting:[/]")
+        for sentence in flagged:
+            verdict = sentence.verdict.value if sentence.verdict else "unverified"
+            console.print(f"  [yellow]![/] [bold]{verdict}[/] — {_snippet(sentence.text, 130)}")
+            if sentence.verification_note:
+                console.print(f"    [dim]{sentence.verification_note}[/]")
+        console.print()
+
     footer = (
         f"[dim]{answer.generator}"
         + (f" ({answer.model})" if answer.model and answer.model != answer.generator else "")
@@ -369,11 +384,11 @@ def ask(
         f" · {answer.total_ms()}ms[/]"
     )
     if answer.faithfulness is not None:
-        unsupported = len(answer.unsupported_sentences())
-        colour = "green" if unsupported == 0 else "yellow"
+        flagged_count = len(answer.flagged_sentences())
+        colour = "green" if flagged_count == 0 else "yellow"
         footer += (
             f"\n[{colour}]faithfulness {answer.faithfulness:.0%}"
-            + (f" · {unsupported} unsupported claim(s)" if unsupported else "")
+            + (f" · {flagged_count} claim(s) flagged" if flagged_count else "")
             + "[/]"
         )
     console.print(footer)
