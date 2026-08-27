@@ -2,7 +2,7 @@
 PY := .venv/bin/python
 PIP := .venv/bin/pip
 
-.PHONY: help venv install test test-cov lint fmt typecheck check serve clean demo
+.PHONY: help venv install test test-cov lint fmt typecheck check serve clean demo eval
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -39,6 +39,11 @@ demo: ## Ingest this repo's own docs and run a sample search
 	.venv/bin/kb ingest ./docs ./README.md
 	.venv/bin/kb stats
 	.venv/bin/kb search "how does reciprocal rank fusion combine rankings?"
+
+eval: ## Ingest this repo's docs and run the paraphrase retrieval sweep
+	.venv/bin/kb --data-dir /tmp/kbeval ingest ./docs ./README.md
+	.venv/bin/kb --data-dir /tmp/kbeval eval run eval/golden-paraphrase.yaml \
+		--sweep full --report ./eval/report
 
 clean: ## Remove caches and build artifacts
 	rm -rf .pytest_cache .ruff_cache .mypy_cache htmlcov .coverage coverage.xml build dist

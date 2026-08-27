@@ -253,3 +253,126 @@ class TestAskVerification:
         payload = json.loads(result.output)
         assert payload["verified"] is True
         assert payload["sentences"]
+
+
+class TestEvalCommands:
+    def test_generate_writes_a_golden_set(
+        self, runner: CliRunner, ingested: list[str], tmp_path: Path
+    ) -> None:
+        output = tmp_path / "golden.yaml"
+        result = runner.invoke(
+            app, [*ingested, "eval", "generate", "-o", str(output), "--per-document", "5"]
+        )
+        assert result.exit_code == 0, result.output
+        assert output.is_file()
+        assert "questions to" in result.output
+
+    def test_generate_on_an_empty_collection_fails_clearly(
+        self, runner: CliRunner, base_args: list[str], tmp_path: Path
+    ) -> None:
+        result = runner.invoke(
+            app, [*base_args, "eval", "generate", "-o", str(tmp_path / "g.yaml")]
+        )
+        assert result.exit_code == 1
+        assert "empty" in result.output
+
+    def test_run_reports_metrics(
+        self, runner: CliRunner, ingested: list[str], tmp_path: Path
+    ) -> None:
+        output = tmp_path / "golden.yaml"
+        runner.invoke(
+            app, [*ingested, "eval", "generate", "-o", str(output), "--per-document", "5"]
+        )
+        result = runner.invoke(app, [*ingested, "eval", "run", str(output)])
+        assert result.exit_code == 0, result.output
+        assert "ndcg@5" in result.output
+
+    def test_sweep_compares_configurations(
+        self, runner: CliRunner, ingested: list[str], tmp_path: Path
+    ) -> None:
+        output = tmp_path / "golden.yaml"
+        runner.invoke(
+            app, [*ingested, "eval", "generate", "-o", str(output), "--per-document", "5"]
+        )
+        result = runner.invoke(
+            app, [*ingested, "eval", "run", str(output), "--sweep", "strategies"]
+        )
+        assert result.exit_code == 0, result.output
+        for label in ("lexical", "dense", "hybrid"):
+            assert label in result.output
+
+    def test_unknown_sweep_fails(
+        self, runner: CliRunner, ingested: list[str], tmp_path: Path
+    ) -> None:
+        output = tmp_path / "golden.yaml"
+        runner.invoke(
+            app, [*ingested, "eval", "generate", "-o", str(output), "--per-document", "5"]
+        )
+        result = runner.invoke(app, [*ingested, "eval", "run", str(output), "--sweep", "nonsense"])
+        assert result.exit_code == 1
+        assert "unknown sweep" in result.output
+
+    def test_report_artifacts_are_written(
+        self, runner: CliRunner, ingested: list[str], tmp_path: Path
+    ) -> None:
+        output = tmp_path / "golden.yaml"
+        runner.invoke(
+            app, [*ingested, "eval", "generate", "-o", str(output), "--per-document", "5"]
+        )
+        report_dir = tmp_path / "report"
+        result = runner.invoke(
+            app, [*ingested, "eval", "run", str(output), "--report", str(report_dir)]
+        )
+        assert result.exit_code == 0
+        assert (report_dir / "evaluation.md").is_file()
+        assert (report_dir / "evaluation.json").is_file()
+        assert (report_dir / "evaluation-metrics.svg").is_file()
+
+    def test_fail_under_gates_on_the_metric(
+        self, runner: CliRunner, ingested: list[str], tmp_path: Path
+    ) -> None:
+        """A retrieval regression should fail a build, not be found in production."""
+        output = tmp_path / "golden.yaml"
+        runner.invoke(
+            app, [*ingested, "eval", "generate", "-o", str(output), "--per-document", "5"]
+        )
+        passing = runner.invoke(app, [*ingested, "eval", "run", str(output), "--fail-under", "0.0"])
+        assert passing.exit_code == 0
+        assert "meets the" in passing.output
+
+        failing = runner.invoke(
+            app, [*ingested, "eval", "run", str(output), "--fail-under", "1.01"]
+        )
+        assert failing.exit_code == 1
+        assert "below the" in failing.output
+
+    def test_mine_requires_logged_queries(
+        self, runner: CliRunner, ingested: list[str], tmp_path: Path
+    ) -> None:
+        result = runner.invoke(app, [*ingested, "eval", "mine", "-o", str(tmp_path / "mined.yaml")])
+        assert result.exit_code == 1
+        assert "no queries logged" in result.output
+
+    def test_mine_seeds_from_logged_queries(
+        self, runner: CliRunner, ingested: list[str], tmp_path: Path
+    ) -> None:
+        runner.invoke(app, [*ingested, "search", "reciprocal rank fusion"])
+        output = tmp_path / "mined.yaml"
+        result = runner.invoke(app, [*ingested, "eval", "mine", "-o", str(output)])
+        assert result.exit_code == 0
+        assert output.is_file()
+        assert "fill in must_contain" in result.output
+
+
+class TestShippedGoldenSet:
+    def test_the_committed_paraphrase_set_is_valid(self) -> None:
+        """The set shipped in the repo must load and be well-formed."""
+        from kb.eval import GoldenSet
+
+        path = Path(__file__).resolve().parents[1] / "eval" / "golden-paraphrase.yaml"
+        if not path.is_file():  # pragma: no cover - present in the repo
+            pytest.skip("paraphrase golden set not present")
+        golden = GoldenSet.load(path)
+        assert len(golden) >= 15
+        assert all(q.must_contain for q in golden.queries)
+        assert len({q.id for q in golden.queries}) == len(golden)

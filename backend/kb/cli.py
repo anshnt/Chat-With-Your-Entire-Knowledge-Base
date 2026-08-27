@@ -51,6 +51,7 @@ _state: dict[str, object] = {}
 
 @app.callback()
 def main_callback(
+    ctx: typer.Context,
     db: Annotated[
         Path | None, typer.Option("--db", help="Path to the SQLite database file")
     ] = None,
@@ -77,6 +78,9 @@ def main_callback(
     _overrides.clear()
     _overrides.update(overrides)
     _state["quiet"] = quiet
+    # Sub-apps (e.g. `kb eval`) receive settings through the context rather than
+    # reaching into module state.
+    ctx.obj = {"settings": _settings}
 
 
 def _settings() -> Settings:
@@ -616,6 +620,16 @@ def _highlight_markers(text: str) -> str:
 def _snippet(text: str, width: int = 300) -> str:
     body = " ".join(text.split())
     return body if len(body) <= width else f"{body[:width].rstrip()}…"
+
+
+def _register_subcommands() -> None:
+    """Attach sub-apps that live in their own packages."""
+    from kb.eval.cli import app as eval_app
+
+    app.add_typer(eval_app, name="eval")
+
+
+_register_subcommands()
 
 
 def main() -> None:
