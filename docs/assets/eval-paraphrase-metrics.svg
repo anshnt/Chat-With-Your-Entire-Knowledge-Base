@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 320" width="720" height="320" role="img" aria-label="Retrieval quality — paraphrase" font-family="system-ui, -apple-system, sans-serif">
+<title>Retrieval quality — paraphrase</title>
+<text x="48" y="22" font-size="14" font-weight="600" fill="#6b7280">Retrieval quality — paraphrase</text>
+<line x1="48" y1="268.0" x2="704" y2="268.0" stroke="#8b93a1" stroke-opacity="0.25" stroke-width="1"/>
+<text x="40" y="272.0" font-size="10" text-anchor="end" fill="#6b7280" fill-opacity="0.8">0</text>
+<line x1="48" y1="212.5" x2="704" y2="212.5" stroke="#8b93a1" stroke-opacity="0.25" stroke-width="1"/>
+<text x="40" y="216.5" font-size="10" text-anchor="end" fill="#6b7280" fill-opacity="0.8">0.25</text>
+<line x1="48" y1="157.0" x2="704" y2="157.0" stroke="#8b93a1" stroke-opacity="0.25" stroke-width="1"/>
+<text x="40" y="161.0" font-size="10" text-anchor="end" fill="#6b7280" fill-opacity="0.8">0.5</text>
+<line x1="48" y1="101.5" x2="704" y2="101.5" stroke="#8b93a1" stroke-opacity="0.25" stroke-width="1"/>
+<text x="40" y="105.5" font-size="10" text-anchor="end" fill="#6b7280" fill-opacity="0.8">0.75</text>
+<line x1="48" y1="46.0" x2="704" y2="46.0" stroke="#8b93a1" stroke-opacity="0.25" stroke-width="1"/>
+<text x="40" y="50.0" font-size="10" text-anchor="end" fill="#6b7280" fill-opacity="0.8">1</text>
+<rect x="66.4" y="95.3" width="23.6" height="172.7" fill="#3b82f6" rx="2"><title>lexical · hit_rate@5: 0.778</title></rect>
+<text x="78.2" y="91.3" font-size="9" text-anchor="middle" fill="#6b7280">0.78</text>
+<rect x="90.0" y="157.0" width="23.6" height="111.0" fill="#f59e0b" rx="2"><title>dense · hit_rate@5: 0.500</title></rect>
+<text x="101.8" y="153.0" font-size="9" text-anchor="middle" fill="#6b7280">0.50</text>
+<rect x="113.6" y="83.0" width="23.6" height="185.0" fill="#10b981" rx="2"><title>hybrid · hit_rate@5: 0.833</title></rect>
+<text x="125.4" y="79.0" font-size="9" text-anchor="middle" fill="#6b7280">0.83</text>
+<rect x="137.2" y="95.3" width="23.6" height="172.7" fill="#a855f7" rx="2"><title>hybrid+rerank · hit_rate@5: 0.778</title></rect>
+<text x="149.0" y="91.3" font-size="9" text-anchor="middle" fill="#6b7280">0.78</text>
+<text x="113.6" y="284" font-size="10" text-anchor="middle" fill="#6b7280">hit_rate@5</text>
+<rect x="197.6" y="107.7" width="23.6" height="160.3" fill="#3b82f6" rx="2"><title>lexical · recall@5: 0.722</title></rect>
+<text x="209.4" y="103.7" font-size="9" text-anchor="middle" fill="#6b7280">0.72</text>
+<rect x="221.2" y="169.3" width="23.6" height="98.7" fill="#f59e0b" rx="2"><title>dense · recall@5: 0.444</title></rect>
+<text x="233.0" y="165.3" font-size="9" text-anchor="middle" fill="#6b7280">0.44</text>
+<rect x="244.8" y="95.3" width="23.6" height="172.7" fill="#10b981" rx="2"><title>hybrid · recall@5: 0.778</title></rect>
+<text x="256.6" y="91.3" font-size="9" text-anchor="middle" fill="#6b7280">0.78</text>
+<rect x="268.4" y="95.3" width="23.6" height="172.7" fill="#a855f7" rx="2"><title>hybrid+rerank · recall@5: 0.778</title></rect>
+<text x="280.2" y="91.3" font-size="9" text-anchor="middle" fill="#6b7280">0.78</text>
+<text x="244.8" y="284" font-size="10" text-anchor="middle" fill="#6b7280">recall@5</text>
+<rect x="328.8" y="123.3" width="23.6" height="144.7" fill="#3b82f6" rx="2"><title>lexical · ndcg@5: 0.652</title></rect>
+<text x="340.6" y="119.3" font-size="9" text-anchor="middle" fill="#6b7280">0.65</text>
+<rect x="352.4" y="203.2" width="23.6" height="64.8" fill="#f59e0b" rx="2"><title>dense · ndcg@5: 0.292</title></rect>
+<text x="364.2" y="199.2" font-size="9" text-anchor="middle" fill="#6b7280">0.29</text>
+<rect x="376.0" y="121.6" width="23.6" height="146.4" fill="#10b981" rx="2"><title>hybrid · ndcg@5: 0.659</title></rect>
+<text x="387.8" y="117.6" font-size="9" text-anchor="middle" fill="#6b7280">0.66</text>
+<rect x="399.6" y="126.7" width="23.6" height="141.3" fill="#a855f7" rx="2"><title>hybrid+rerank · ndcg@5: 0.636</title></rect>
+<text x="411.4" y="122.7" font-size="9" text-anchor="middle" fill="#6b7280">0.64</text>
+<text x="376.0" y="284" font-size="10" text-anchor="middle" fill="#6b7280">ndcg@5</text>
+<rect x="460.0" y="121.6" width="23.6" height="146.4" fill="#3b82f6" rx="2"><title>lexical · mrr: 0.659</title></rect>
+<text x="471.8" y="117.6" font-size="9" text-anchor="middle" fill="#6b7280">0.66</text>
+<rect x="483.6" y="203.4" width="23.6" height="64.6" fill="#f59e0b" rx="2"><title>dense · mrr: 0.291</title></rect>
+<text x="495.4" y="199.4" font-size="9" text-anchor="middle" fill="#6b7280">0.29</text>
+<rect x="507.2" y="123.4" width="23.6" height="144.6" fill="#10b981" rx="2"><title>hybrid · mrr: 0.651</title></rect>
+<text x="519.0" y="119.4" font-size="9" text-anchor="middle" fill="#6b7280">0.65</text>
+<rect x="530.8" y="137.5" width="23.6" height="130.5" fill="#a855f7" rx="2"><title>hybrid+rerank · mrr: 0.588</title></rect>
+<text x="542.6" y="133.5" font-size="9" text-anchor="middle" fill="#6b7280">0.59</text>
+<text x="507.2" y="284" font-size="10" text-anchor="middle" fill="#6b7280">mrr</text>
+<rect x="591.2" y="124.1" width="23.6" height="143.9" fill="#3b82f6" rx="2"><title>lexical · map: 0.648</title></rect>
+<text x="603.0" y="120.1" font-size="9" text-anchor="middle" fill="#6b7280">0.65</text>
+<rect x="614.8" y="210.1" width="23.6" height="57.9" fill="#f59e0b" rx="2"><title>dense · map: 0.261</title></rect>
+<text x="626.6" y="206.1" font-size="9" text-anchor="middle" fill="#6b7280">0.26</text>
+<rect x="638.4" y="130.4" width="23.6" height="137.6" fill="#10b981" rx="2"><title>hybrid · map: 0.620</title></rect>
+<text x="650.2" y="126.4" font-size="9" text-anchor="middle" fill="#6b7280">0.62</text>
+<rect x="662.0" y="137.5" width="23.6" height="130.5" fill="#a855f7" rx="2"><title>hybrid+rerank · map: 0.588</title></rect>
+<text x="673.8" y="133.5" font-size="9" text-anchor="middle" fill="#6b7280">0.59</text>
+<text x="638.4" y="284" font-size="10" text-anchor="middle" fill="#6b7280">map</text>
+<rect x="48.0" y="297.0" width="10" height="10" fill="#3b82f6" rx="2"/><text x="63.0" y="306.0" font-size="10" fill="#6b7280">lexical</text><rect x="117.4" y="297.0" width="10" height="10" fill="#f59e0b" rx="2"/><text x="132.4" y="306.0" font-size="10" fill="#6b7280">dense</text><rect x="174.4" y="297.0" width="10" height="10" fill="#10b981" rx="2"/><text x="189.4" y="306.0" font-size="10" fill="#6b7280">hybrid</text><rect x="237.6" y="297.0" width="10" height="10" fill="#a855f7" rx="2"/><text x="252.6" y="306.0" font-size="10" fill="#6b7280">hybrid+rerank</text>
+</svg>

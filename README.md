@@ -12,7 +12,7 @@ are the ones a demo skips:
 | **Hybrid search** | BM25 (SQLite FTS5) fused with dense cosine retrieval via Reciprocal Rank Fusion | Dense retrieval alone misses exact identifiers, error codes and rare terms; BM25 alone misses paraphrase. The chunk BM25 ranks 40th and the vectors rank 35th is often the right answer — and invisible to either at k=8 |
 | **Reranking** | Four providers behind one interface: offline cross-feature, local cross-encoder, hosted (Cohere/Voyage), listwise LLM | Fusion optimises recall at k=50; the generator sees k=8. Reranking converts that recall into precision — and gives *discriminative* scores where RRF's are compressed |
 | **Citation verification** | Every answer sentence is checked against the chunk it cites; wrong figures, contradictions and uncited claims are flagged | A citation nobody checked is decoration. Catches the failure that matters: a fluent paraphrase with a wrong number, cited to a real page |
-| **Retrieval evaluation** | Recall@k, Precision@k, MRR, MAP, nDCG@k over a golden set, with config sweeps | Without it, every retrieval change is a vibe. With it, "hybrid beats dense" is a number you can reproduce |
+| **Retrieval evaluation** | Recall@k, Precision@k, MRR, MAP, nDCG@k over a golden set, config sweeps, SVG reports | Without it every retrieval change is a vibe. With it, "hybrid beats dense" is a number — including when the number disagrees with you |
 | **Document visualization** | 2D projection of the corpus, clustering, and a retrieval heatmap | Shows what the knowledge base actually contains, and which parts of it ever get used |
 
 **It runs with no API keys.** The default embedder and generator are
@@ -112,6 +112,73 @@ overlapping chunks.
 
 Streaming is available over SSE at `POST /api/ask/stream`; citations arrive with
 the terminal `done` event, since a marker can be half-emitted mid-stream.
+
+## Retrieval evaluation
+
+```bash
+kb eval generate -o eval/golden.yaml       # bootstrap a golden set from the corpus
+kb eval run eval/golden.yaml --sweep full  # compare configurations
+```
+
+Same questions, same corpus, one variable changed. Measured against **this
+repository's own documentation** with the default offline embedder:
+
+![Retrieval quality on paraphrased questions](docs/assets/eval-paraphrase-metrics.svg)
+
+| configuration | hit_rate@5 | recall@5 | ndcg@5 | mrr | mean ms |
+|---|---|---|---|---|---|
+| lexical (BM25) | 0.778 | 0.722 | 0.652 | **0.659** | 2.4 |
+| dense | 0.500 | 0.444 | 0.292 | 0.291 | 3.1 |
+| **hybrid** | **0.833** | **0.778** | **0.659** | 0.651 | 7.3 |
+| hybrid + rerank | 0.778 | 0.778 | 0.636 | 0.588 | 15.4 |
+
+The histogram of *where* the first relevant chunk landed is the most diagnostic
+single artefact — a tail at ranks 8-10 blames the reranker, a spike in the
+rightmost bar blames retrieval:
+
+![Rank of the first relevant chunk](docs/assets/eval-paraphrase-ranks.svg)
+
+### The interesting part is where the numbers disagree with the pitch
+
+Those figures come from a **hand-written** golden set whose questions are
+deliberately worded *differently* from the passages that answer them. Run the
+same sweep against a set **generated from the corpus** and the ranking inverts:
+
+![Retrieval quality on generated questions](docs/assets/eval-generated-metrics.svg)
+
+| configuration | generated: hit_rate@5 | generated: ndcg@5 | paraphrase: hit_rate@5 | paraphrase: ndcg@5 |
+|---|---|---|---|---|
+| lexical | **1.000** | 0.844 | 0.778 | 0.652 |
+| dense | 0.600 | 0.485 | 0.500 | 0.292 |
+| hybrid | 0.867 | 0.726 | **0.833** | **0.659** |
+| hybrid + rerank | 0.933 | **0.818** | 0.778 | 0.636 |
+
+Three conclusions, none of them flattering by default:
+
+1. **A synthetic golden set measures vocabulary, not quality.** Questions derived
+   from a corpus inherit its wording, so BM25 scores a perfect 1.000 hit rate and
+   hybrid *loses* to it. Any project reporting only synthetic numbers is reporting
+   how well its retriever matches strings it was handed.
+2. **Hybrid earns its keep on recall, not on ranking.** On paraphrased questions
+   it gains 0.055 hit rate and 0.056 recall over BM25 while nDCG barely moves.
+   That is the expected shape: fusion surfaces chunks BM25 never returns, and
+   ordering them is the reranker's job.
+3. **The offline reranker helps on one set and hurts on the other**, +0.092 nDCG
+   vs −0.023, for a legible reason: it scores term coverage, proximity and exact
+   phrase — exactly the signals a paraphrased question *lacks*. That measurement
+   is the argument for `KB_RERANK_PROVIDER=cross_encoder` in real use, and it is
+   not knowable without measuring.
+
+Full write-up, metric definitions, and the four decisions that keep the numbers
+honest (excluded-not-zeroed queries, capped recall denominators, achievable nDCG
+ceilings): [`docs/evaluation.md`](docs/evaluation.md).
+
+```bash
+kb eval run eval/golden-paraphrase.yaml --metric ndcg@5 --fail-under 0.55
+```
+
+Exits non-zero below the threshold, so a retrieval regression fails the build
+instead of being discovered in production.
 
 ## Citation verification
 
@@ -230,6 +297,7 @@ kb serve            # http://localhost:8000, docs at /docs
 | `GET /api/chunks/{id}/context` | Neighbouring chunks, for the source viewer |
 | `GET /api/collections/{name}/stats` | Corpus statistics |
 | `GET /api/collections/{name}/heatmap` | Which chunks actually get retrieved |
+| `GET /api/collections/{name}/queries` | Recently issued queries, for mining eval questions |
 
 ## How citations jump to the source
 
@@ -294,9 +362,10 @@ KB_VERIFICATION_THRESHOLD=0.5     # support score below which a claim is unsuppo
 ## Development
 
 ```bash
-make test        # pytest, offline, no keys required
+make test        # pytest, offline, no keys required — 584 tests
 make lint        # ruff + mypy
 make check       # both
+make eval        # ingest this repo's docs and run the paraphrase sweep
 ```
 
 ## License
