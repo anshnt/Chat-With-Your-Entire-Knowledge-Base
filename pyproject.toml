@@ -64,7 +64,7 @@ packages = ["backend/kb"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-src = ["backend", "tests"]
+src = ["backend", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "C4", "SIM", "RET", "ARG", "PTH", "RUF"]
@@ -79,7 +79,7 @@ testpaths = ["tests"]
 # "." is required so `tests.*` helper modules import under a bare `pytest`
 # invocation. `python -m pytest` prepends the cwd for you; plain `pytest` does
 # not, and CI uses the latter.
-pythonpath = ["backend", "."]
+pythonpath = ["backend", ".", "scripts"]
 addopts = "-q --strict-markers"
 asyncio_mode = "auto"
 markers = [

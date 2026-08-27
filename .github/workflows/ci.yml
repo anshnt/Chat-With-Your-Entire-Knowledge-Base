@@ -59,9 +59,14 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - run: pip install -e ".[dev]"
-      - run: ruff check backend tests
-      - run: ruff format --check backend tests
+      - run: ruff check backend tests scripts
+      - run: ruff format --check backend tests scripts
       - run: mypy
+
+      # A broken Mermaid block renders as a red error box on the README
+      # indefinitely, so the diagrams are checked like any other source.
+      - name: Check the README diagrams parse
+        run: python scripts/check_mermaid.py
 
   smoke:
     name: cli smoke test
