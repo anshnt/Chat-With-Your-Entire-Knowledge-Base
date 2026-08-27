@@ -10,6 +10,8 @@ Ask questions across PDFs, Markdown, Notion exports, websites, GitHub repos and
 YouTube transcripts, and get answers whose citations **land on the exact page,
 line, timestamp or line range they came from**.
 
+![The chat interface with a cited answer and the source pane open](docs/assets/screenshot-chat.png)
+
 This is not a RAG demo with a vector store and a prompt. The interesting parts
 are the ones a demo skips:
 
@@ -313,6 +315,55 @@ fusion only:   0.0164  0.0161  0.0159    ← which of these is actually right?
 `kb eval` (see [`docs/evaluation.md`](docs/evaluation.md)) is how you decide
 whether a hosted reranker earns its latency on *your* corpus, rather than taking
 a benchmark's word for it.
+
+## Web interface
+
+```bash
+kb serve                              # the API on :8000
+cd frontend && npm install && npm run dev   # the UI on :5173
+```
+
+Three panes: retrieval controls and ingestion on the left, the conversation in
+the middle, and **the source** on the right. That last one is the point — a
+citation has to land somewhere, and if checking a claim means leaving the page,
+most readers will not.
+
+| | |
+|---|---|
+| ![The corpus map](docs/assets/screenshot-map.png) | ![Dark mode](docs/assets/screenshot-dark.png) |
+
+Four decisions worth naming:
+
+**Verdicts render on the sentence, not in a panel.** A list of "3 unsupported
+claims" under an answer is something a reader skips. A wavy underline under the
+actual clause is not. And `supported` sentences get **no** decoration —
+highlighting the normal case draws the eye away from the exceptions, which are
+the only reason the feature exists. Colour is never the only signal: each verdict
+has a distinct underline style and a word, so it survives colour blindness and
+greyscale.
+
+**A citation marker is a real `<button>`.** Markers are the primary navigation
+here, so they are keyboard-reachable and their labels say where they go
+("Citation 2: Architecture — Retrieval › Fusion") rather than reading out "[2]".
+The answer is rendered as React elements, never `dangerouslySetInnerHTML` —
+routing model output through an HTML sink would be the obvious way to put an XSS
+hole in an otherwise safe app.
+
+**A link that would not resolve is not rendered as a link.** A `TextLocator` for
+a local Markdown file produces `docs/architecture.md#L154`, which is a fine
+address for an editor and a dead link in a browser. Showing it anyway is exactly
+the failure this project criticises elsewhere, so the UI checks first and shows
+the passage instead.
+
+**The retrieval knobs are in the UI on purpose.** Asking the same question under
+`hybrid`, `lexical` and `dense`, with the per-stage scores visible, is how you
+develop an intuition for what fusion is actually doing — and how you tell a
+generation problem from a retrieval one.
+
+No charting or Markdown dependency: the corpus map is ~200 lines of hand-drawn
+SVG, and answer text goes through a ~60-line inline-Markdown tokeniser, because
+the extractive generator quotes source sentences verbatim and a sentence lifted
+from a Markdown file arrives with its `**bold**` intact.
 
 ## HTTP API
 

@@ -502,6 +502,12 @@ class AnswerCitation(BaseModel):
     deep_link: str | None = None
     snippet: str = ""
     source_type: SourceType | None = None
+    #: The serialised locator. Carried alongside ``deep_link`` because a client
+    #: needs the structured position for decisions the link cannot express — a
+    #: PDF page can be embedded in place, a website has to open in a new tab —
+    #: and reverse-engineering that from a URL string is guesswork.
+    locator: dict[str, Any] = Field(default_factory=dict)
+    heading_context: str = ""
 
     @classmethod
     def from_chunk(cls, marker: int, chunk: Chunk, *, snippet_chars: int = 320) -> AnswerCitation:
@@ -515,6 +521,8 @@ class AnswerCitation(BaseModel):
             deep_link=chunk.deep_link(),
             snippet=body if len(body) <= snippet_chars else f"{body[:snippet_chars].rstrip()}…",
             source_type=chunk.source_type,
+            locator=chunk.locator.model_dump(mode="json"),
+            heading_context=chunk.heading_context,
         )
 
 
