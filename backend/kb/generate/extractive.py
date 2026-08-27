@@ -109,13 +109,19 @@ class ExtractiveGenerator(Generator):
         out: list[tuple[int, str, list[str]]] = []
         for marker, chunk in enumerate(chunks, start=1):
             body = _strip_heading_prefix(chunk)
-            for sentence in split_sentences(body):
-                cleaned = " ".join(sentence.split())
-                if not MIN_SENTENCE_CHARS <= len(cleaned) <= MAX_SENTENCE_CHARS:
-                    continue
-                if _is_boilerplate(cleaned):
-                    continue
-                out.append((marker, cleaned, _WORD_RE.findall(cleaned.lower())))
+            # Split on blank lines before splitting on sentences. A list has no
+            # sentence terminator before it, so a single split_sentences pass
+            # swallows the whole list into the sentence that introduces it —
+            # producing an answer like "This is a design decision: - item one; -
+            # item two", which reads as broken.
+            for block in _paragraphs(body):
+                for sentence in split_sentences(block):
+                    cleaned = " ".join(sentence.split())
+                    if not MIN_SENTENCE_CHARS <= len(cleaned) <= MAX_SENTENCE_CHARS:
+                        continue
+                    if _is_boilerplate(cleaned):
+                        continue
+                    out.append((marker, cleaned, _WORD_RE.findall(cleaned.lower())))
         return out
 
     def _relevance(
@@ -125,10 +131,11 @@ class ExtractiveGenerator(Generator):
         if not terms:
             return 0.0
         present = set(tokens)
-        total = sum(idf[t] for t in terms) or 1.0
+        # Only terms present somewhere in the candidate pool carry weight.
+        total = sum(idf.values()) or 1.0
         matched = sum(
-            idf[term]
-            for term in terms
+            weight
+            for term, weight in idf.items()
             if term in present or (len(term) >= 5 and any(t.startswith(term) for t in present))
         )
         return matched / total
@@ -166,7 +173,19 @@ def _reindex(
 
 
 def _idf(terms: Sequence[str], token_lists: Sequence[Sequence[str]]) -> dict[str, float]:
-    """IDF over the candidate sentences, so weighting adapts to this context."""
+    """IDF over the candidate sentences, so weighting adapts to this context.
+
+    A term appearing in *no* candidate is dropped, not given the maximal weight
+    the formula would otherwise assign it. IDF measures how well a term
+    discriminates *within this pool*, and a term present nowhere discriminates
+    nothing — while a large weight on it drags every candidate below the
+    relevance floor and makes the generator refuse a question it could answer.
+
+    Concretely: asking "what is the hashing embedder" of a passage saying
+    "HashingEmbedder is signed feature hashing…" matches on `hashing` but not on
+    `embedder`. Weighting the absent term maximally scored that 0.17 and refused;
+    dropping it scores 1.0 and answers.
+    """
     n = len(token_lists) or 1
     frequency: dict[str, int] = dict.fromkeys(terms, 0)
     for tokens in token_lists:
@@ -177,6 +196,7 @@ def _idf(terms: Sequence[str], token_lists: Sequence[Sequence[str]]) -> dict[str
     return {
         term: math.log(1.0 + (n - frequency[term] + 0.5) / (frequency[term] + 0.5))
         for term in terms
+        if frequency[term] > 0
     }
 
 
@@ -205,13 +225,48 @@ def _strip_heading_prefix(chunk: Chunk) -> str:
     return text
 
 
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s")
+
+
+def _paragraphs(text: str) -> list[str]:
+    """Split into paragraphs, dropping list blocks and fenced code.
+
+    A list item is not a sentence, and a paragraph that introduces one
+    ("…for two reasons:") is not an answer on its own — so both are skipped
+    rather than stitched together.
+    """
+    blocks: list[str] = []
+    in_fence = False
+    for raw_block in re.split(r"\n\s*\n", text):
+        block = raw_block.strip()
+        if not block:
+            continue
+        fence_lines = sum(1 for line in block.splitlines() if line.lstrip().startswith("```"))
+        if fence_lines % 2 == 1:
+            in_fence = not in_fence
+            continue
+        if in_fence or block.startswith("```"):
+            continue
+        lines = [line for line in block.splitlines() if line.strip()]
+        # A block that is mostly list items is a list, however it wrapped.
+        list_lines = sum(1 for line in lines if _LIST_ITEM_RE.match(line))
+        if lines and list_lines / len(lines) > 0.4:
+            continue
+        blocks.append(block)
+    return blocks
+
+
 def _is_boilerplate(sentence: str) -> bool:
     """Filter out fragments that score well but read as noise."""
     if sentence.startswith(("|", "```", "- ", "* ", "#")):
         return True
     if sentence.count("|") >= 3:  # a table row
         return True
-    return sentence.endswith(":") and len(sentence) < 80
+    # A flattened list that survived paragraph splitting: "…reasons: - a - b".
+    if sentence.count(" - ") >= 2 or ": -" in sentence:
+        return True
+    # A sentence that only introduces something is not an answer by itself.
+    return sentence.endswith(":")
 
 
 def _no_answer_text() -> str:

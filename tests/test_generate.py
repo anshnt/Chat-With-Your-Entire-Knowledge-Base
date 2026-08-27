@@ -301,6 +301,56 @@ class TestExtractiveGenerator:
         answer = generator.generate("damping constant default", candidates)
         assert "|" not in answer.text
 
+    def test_a_markdown_list_is_not_absorbed_into_the_sentence_before_it(self) -> None:
+        """A list has no sentence terminator before it, so a single sentence-split
+        pass swallows the whole list into the sentence that introduces it — and
+        the answer reads "for two reasons: - item one; - item two"."""
+        generator = ExtractiveGenerator()
+        body = (
+            "The default is offline for two reasons:\n\n"
+            "- it needs no keys and no network;\n"
+            "- CI runs on forks without secrets.\n\n"
+            "The damping constant defaults to 60 in the standard formulation."
+        )
+        answer = generator.generate("damping constant default", [scored("a", body)])
+        assert " - " not in answer.text
+        assert ": -" not in answer.text
+        assert "defaults to 60" in answer.text
+
+    def test_a_sentence_that_only_introduces_something_is_not_an_answer(self) -> None:
+        generator = ExtractiveGenerator()
+        body = (
+            "The damping constant is configured as follows:\n\n"
+            "The damping constant defaults to 60 in the standard formulation."
+        )
+        answer = generator.generate("damping constant", [scored("a", body)])
+        assert not answer.text.strip().endswith(":")
+
+    def test_a_query_term_absent_from_every_candidate_does_not_force_a_refusal(self) -> None:
+        """IDF measures discrimination *within the candidate pool*.
+
+        A term present in no candidate discriminates nothing, so weighting it
+        maximally (as the raw formula does) drags every candidate below the
+        relevance floor and refuses a question the context answers.
+        """
+        generator = ExtractiveGenerator()
+        body = (
+            "HashingEmbedder is signed feature hashing over word unigrams, word "
+            "bigrams and character 4-grams, with sublinear term-frequency damping."
+        )
+        # "embedder" appears nowhere as a standalone token — only inside
+        # "HashingEmbedder" — so it cannot match, and must not veto the answer.
+        answer = generator.generate("what is the hashing embedder", [scored("a", body)])
+        assert not answer.refused
+        assert "signed feature hashing" in answer.text
+
+    def test_an_entirely_absent_query_still_refuses(self) -> None:
+        """Dropping absent terms must not weaken the off-corpus refusal."""
+        generator = ExtractiveGenerator()
+        body = "Reciprocal Rank Fusion combines ranked lists using ranks not scores."
+        answer = generator.generate("who won the 1998 world cup", [scored("a", body)])
+        assert answer.refused
+
     def test_context_accounting_is_reported(self) -> None:
         candidates = [scored("a", "The damping constant defaults to 60 for fusion purposes.")]
         answer = ExtractiveGenerator().generate("damping constant", candidates)

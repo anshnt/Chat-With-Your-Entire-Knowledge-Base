@@ -2,7 +2,7 @@
 PY := .venv/bin/python
 PIP := .venv/bin/pip
 
-.PHONY: help venv install test test-cov lint fmt typecheck check diagrams serve clean demo eval map
+.PHONY: help venv install install-ui test test-cov lint fmt typecheck check diagrams serve ui clean demo eval map
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -37,6 +37,12 @@ check: lint typecheck diagrams test ## Lint, type-check, check diagrams, and tes
 
 serve: ## Run the API with auto-reload
 	.venv/bin/kb serve --reload
+
+install-ui: ## Install the frontend dependencies
+	cd frontend && npm install
+
+ui: ## Run the frontend dev server (needs `make serve` in another shell)
+	cd frontend && npm run dev
 
 demo: ## Ingest this repo's own docs and run a sample search
 	.venv/bin/kb ingest ./docs ./README.md
