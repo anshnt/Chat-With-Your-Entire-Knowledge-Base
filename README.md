@@ -1,5 +1,11 @@
 # Chat With Your Entire Knowledge Base
 
+[![CI](https://github.com/anshnt/Chat-With-Your-Entire-Knowledge-Base/actions/workflows/ci.yml/badge.svg)](https://github.com/anshnt/Chat-With-Your-Entire-Knowledge-Base/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-773%20offline-brightgreen)](tests)
+[![No API keys required](https://img.shields.io/badge/API%20keys-not%20required-informational)](#configuration)
+
 Ask questions across PDFs, Markdown, Notion exports, websites, GitHub repos and
 YouTube transcripts, and get answers whose citations **land on the exact page,
 line, timestamp or line range they came from**.
@@ -216,6 +222,31 @@ constant k defaults to 60"*:
 | …defaults to 60 in every implementation. | `uncited` | 0.00 | a factual claim citing nothing |
 | Here is what the sources say: | `not_a_claim` | — | excluded from scoring |
 
+```mermaid
+flowchart TB
+    A["answer text"] --> B["split into sentences<br/><i>trailing [n] reattached<br/>to the claim it follows</i>"]
+    B --> C{"is it a<br/>claim?"}
+    C -->|no| NA["not_a_claim<br/><i>excluded from scoring</i>"]
+    C -->|yes| D{"cites<br/>a source?"}
+    D -->|no| UC["uncited"]
+    D -->|yes| E["check against the cited chunk"]
+
+    E --> F{"figure<br/>contradicts?"}
+    F -->|yes| UNS["unsupported<br/><i>dispositive: score capped</i>"]
+    E --> G{"negation<br/>flipped?"}
+    G -->|yes| UNS
+    E --> H["coverage + alignment<br/><i>IDF-weighted</i>"]
+    H --> I{"score vs<br/>threshold"}
+    I -->|"above"| SUP["supported<br/><i>+ supporting quote</i>"]
+    I -->|"near"| PART["partial"]
+    I -->|"below"| UNS
+
+    SUP --> FA["faithfulness =<br/>supported / claims"]
+    PART --> FA
+    UNS --> FA
+    UC --> FA
+```
+
 `faithfulness` is the share of *claim* sentences that come out supported.
 `not_a_claim` sentences are excluded from the denominator — a faithfulness metric
 you can raise by adding filler is worthless.
@@ -317,8 +348,30 @@ itself:
 | YouTube | video id + start time | `youtube.com/watch?v=ID&t=93s` |
 | Notion export | page path + line range | page URL |
 
+```mermaid
+flowchart TB
+    CHUNKER["Chunker<br/><i>knows nothing about pages,<br/>timestamps or line numbers</i>"]
+    CHUNKER --> DRAFT["ChunkDraft<br/><i>text + line/char range</i>"]
+    DRAFT --> CB["Segment.build_locator( )"]
+
+    CB --> PDF["PdfLocator<br/>page 12"]
+    CB --> TXT["TextLocator<br/>lines 88-104"]
+    CB --> WEB["WebLocator<br/>quote"]
+    CB --> GH["GitHubLocator<br/>path + lines"]
+    CB --> YT["YouTubeLocator<br/>93s"]
+    CB --> NOT["NotionLocator<br/>page id"]
+
+    PDF --> L1["report.pdf#page=12"]
+    TXT --> L2["notes.md#L88-L104"]
+    WEB --> L3["page#:~:text=RRF,scores"]
+    GH --> L4["blob/main/f.py#L10-L20"]
+    YT --> L5["watch?v=ID#38;t=93s"]
+    NOT --> L6["notion.so/PAGE_ID"]
+```
+
 Adding a source type means adding a `Locator` variant and a connector. Nothing
-in chunking, retrieval or generation changes — they never learn what a page is.
+in chunking, retrieval or generation changes — they never learn what a page is,
+because they only ever call `locator.deep_link()`.
 
 Each connector does the work that source type actually needs, rather than calling
 `.get_text()` and hoping:
@@ -336,22 +389,48 @@ install can ingest.
 
 ## Architecture
 
-```
-sources ──→ connectors ──→ segments ──→ chunkers ──→ chunks + locators
-                                                          │
-                                                          ├──→ FTS5 (BM25)
-                                                          └──→ vectors (float32)
-                                                          
-query ──┬──→ BM25        ──┐
-        └──→ dense cosine ─┴──→ fuse (RRF) ──→ rerank ──→ MMR ──→ top-k
-                                                                    │
-                                                       ┌────────────┴──────────┐
-                                                       ↓                       ↓
-                                              answer + citations    ──→ citation verification
+```mermaid
+flowchart LR
+    subgraph ingest["Ingestion"]
+        direction TB
+        SRC["PDF · Markdown · Notion<br/>Website · GitHub · YouTube"]
+        CONN["Connectors<br/><i>one segment per addressable unit</i>"]
+        CHUNK["Chunkers<br/><i>heading-aware · code-aware</i>"]
+        SRC --> CONN --> CHUNK
+    end
+
+    subgraph store["One SQLite file"]
+        direction TB
+        FTS[("FTS5 index<br/>BM25")]
+        VEC[("float32 vectors<br/>+ norms")]
+    end
+
+    CHUNK -->|"chunks + locators"| FTS
+    CHUNK --> VEC
+
+    Q(["query"]) --> BM25["BM25<br/><i>candidate_k = 50</i>"]
+    Q --> DENSE["dense cosine<br/><i>candidate_k = 50</i>"]
+    FTS -.-> BM25
+    VEC -.-> DENSE
+
+    BM25 --> FUSE{{"fuse<br/>RRF"}}
+    DENSE --> FUSE
+    FUSE --> RR["rerank<br/><i>cross-encoder</i>"]
+    RR --> MMR["MMR<br/><i>diversify</i>"]
+    MMR --> TOPK["top-k = 8"]
+    TOPK --> ANS["answer<br/>+ citations"]
+    ANS --> VERIFY["citation<br/>verification"]
+    TOPK -.->|"same code path"| EVAL["evaluation<br/><i>nDCG · recall · MRR</i>"]
 ```
 
+Two candidate lists of 50 are fused and **only then** cut to 8 — the chunk BM25
+ranks 40th and the vectors rank 35th is often the right answer, and it is
+invisible to either retriever alone at k=8.
+
 One SQLite file holds documents, chunks, the BM25 index and the vectors, so the
-lexical and dense views of the corpus can never drift apart. See
+lexical and dense views of the corpus can never drift apart. The evaluation
+harness runs through the *same* pipeline that serves a live query, which is the
+only way a retrieval benchmark means anything. See
 [`docs/architecture.md`](docs/architecture.md).
 
 ## Corpus visualization

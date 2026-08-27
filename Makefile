@@ -2,7 +2,7 @@
 PY := .venv/bin/python
 PIP := .venv/bin/pip
 
-.PHONY: help venv install test test-cov lint fmt typecheck check serve clean demo eval
+.PHONY: help venv install test test-cov lint fmt typecheck check diagrams serve clean demo eval map
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -21,16 +21,19 @@ test-cov: ## Run tests with a coverage report
 	$(PY) -m pytest --cov --cov-report=term-missing --cov-report=xml
 
 lint: ## Lint with ruff
-	.venv/bin/ruff check backend tests
+	.venv/bin/ruff check backend tests scripts
 
 fmt: ## Auto-fix lint findings and format
-	.venv/bin/ruff check backend tests --fix
-	.venv/bin/ruff format backend tests
+	.venv/bin/ruff check backend tests scripts --fix
+	.venv/bin/ruff format backend tests scripts
 
 typecheck: ## Type-check with mypy
 	.venv/bin/mypy
 
-check: lint typecheck test ## Lint, type-check, and test
+diagrams: ## Check the README's mermaid diagrams parse
+	$(PY) scripts/check_mermaid.py
+
+check: lint typecheck diagrams test ## Lint, type-check, check diagrams, and test
 
 serve: ## Run the API with auto-reload
 	.venv/bin/kb serve --reload
@@ -44,6 +47,10 @@ eval: ## Ingest this repo's docs and run the paraphrase retrieval sweep
 	.venv/bin/kb --data-dir /tmp/kbeval ingest ./docs ./README.md
 	.venv/bin/kb --data-dir /tmp/kbeval eval run eval/golden-paraphrase.yaml \
 		--sweep full --report ./eval/report
+
+map: ## Render the corpus map for this repo's own docs
+	.venv/bin/kb --data-dir /tmp/kbmap ingest ./docs ./README.md
+	.venv/bin/kb --data-dir /tmp/kbmap map -o docs/assets/corpus-map.svg
 
 clean: ## Remove caches and build artifacts
 	rm -rf .pytest_cache .ruff_cache .mypy_cache htmlcov .coverage coverage.xml build dist
