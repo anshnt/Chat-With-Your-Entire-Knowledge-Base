@@ -345,3 +345,73 @@ class TestVerification:
 
     def test_health_reports_the_verifier(self, client: TestClient) -> None:
         assert client.get("/api/health").json()["verifier"] == "lexical-verify"
+
+
+class TestVisualization:
+    def test_map_returns_points_and_clusters(self, client: TestClient) -> None:
+        body = client.get("/api/collections/default/map").json()
+        assert body["n_plotted"] > 0
+        assert body["points"]
+        assert body["clusters"]
+        assert body["method"] in ("umap", "tsne", "pca")
+
+    def test_coordinates_are_normalised(self, client: TestClient) -> None:
+        for point in client.get("/api/collections/default/map").json()["points"]:
+            assert 0.0 <= point["x"] <= 1.0
+            assert 0.0 <= point["y"] <= 1.0
+
+    def test_explicit_pca_reports_explained_variance(self, client: TestClient) -> None:
+        """The honest caveat to show alongside the plot."""
+        body = client.get("/api/collections/default/map", params={"method": "pca"}).json()
+        assert body["method"] == "pca"
+        assert body["explained_variance"] is not None
+
+    def test_retrieval_coverage_reflects_searches(self, client: TestClient) -> None:
+        assert client.get("/api/collections/default/map").json()["retrieval_coverage"] == 0.0
+        client.post("/api/search", json={"query": "reciprocal rank fusion", "top_k": 3})
+        body = client.get("/api/collections/default/map").json()
+        assert body["retrieval_coverage"] > 0.0
+
+    def test_cluster_count_can_be_fixed(self, client: TestClient) -> None:
+        body = client.get("/api/collections/default/map", params={"clusters": 2}).json()
+        assert len(body["clusters"]) <= 2
+
+    def test_sampling_is_reported(self, client: TestClient) -> None:
+        body = client.get("/api/collections/default/map", params={"max_points": 10}).json()
+        assert body["n_plotted"] <= 10
+
+    def test_empty_collection_map(self, empty_client: TestClient) -> None:
+        body = empty_client.get("/api/collections/default/map").json()
+        assert body["points"] == []
+        assert body["notes"]
+
+    def test_graph_nodes_and_edges(self, client: TestClient) -> None:
+        body = client.get("/api/collections/default/graph", params={"min_similarity": 0.0}).json()
+        assert len(body["nodes"]) == 3
+        assert all(e["source"] != e["target"] for e in body["edges"])
+
+    def test_graph_threshold_prunes(self, client: TestClient) -> None:
+        body = client.get("/api/collections/default/graph", params={"min_similarity": 0.999}).json()
+        assert body["edges"] == []
+
+    def test_coverage_lists_never_retrieved_chunks(self, client: TestClient) -> None:
+        """The actionable half: chunks nothing has ever reached."""
+        body = client.get("/api/collections/default/coverage").json()
+        assert body["n_chunks"] > 0
+        assert body["coverage"] == 0.0
+        assert body["never_retrieved"]
+        assert body["most_retrieved"] == []
+
+    def test_coverage_after_searching(self, client: TestClient) -> None:
+        client.post("/api/search", json={"query": "reciprocal rank fusion", "top_k": 3})
+        body = client.get("/api/collections/default/coverage").json()
+        assert body["n_retrieved"] > 0
+        assert body["coverage"] > 0.0
+        assert body["most_retrieved"]
+        assert body["n_queries_logged"] >= 1
+
+    def test_invalid_method_is_rejected(self, client: TestClient) -> None:
+        assert (
+            client.get("/api/collections/default/map", params={"method": "magic"}).status_code
+            == 422
+        )

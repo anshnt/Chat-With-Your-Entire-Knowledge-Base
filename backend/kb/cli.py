@@ -627,6 +627,85 @@ def serve(
 
 
 @app.command()
+def map(
+    collection: Annotated[str, typer.Option("--collection", "-c")] = "default",
+    output: Annotated[
+        Path | None, typer.Option("--output", "-o", help="Write the map as an SVG")
+    ] = None,
+    method: Annotated[str, typer.Option("--method", help="auto | umap | tsne | pca")] = "auto",
+    clusters: Annotated[
+        int | None, typer.Option("--clusters", help="Cluster count; omit to choose one")
+    ] = None,
+    max_points: Annotated[int, typer.Option("--max-points")] = 2000,
+) -> None:
+    """Project the corpus to 2D, cluster it, and label each cluster.
+
+    With ``--output`` this writes an SVG you can commit or drop into a README;
+    otherwise it prints the cluster table, which is the part that is actually
+    readable in a terminal.
+    """
+    from kb.viz import CorpusMapBuilder, render_corpus_map
+
+    knowledge_base = _open()
+    result = CorpusMapBuilder(knowledge_base).build(
+        collection,
+        method=method,  # type: ignore[arg-type]
+        k=clusters,
+        max_points=max_points,
+    )
+    if not result.points:
+        console.print("[yellow]nothing to plot[/]")
+        for note in result.notes:
+            console.print(f"  [dim]{note}[/]")
+        return
+
+    console.print(
+        f"[bold]{result.n_plotted}[/] of {result.n_chunks} chunks · "
+        f"[bold]{result.method.upper()}[/] · {len(result.clusters)} clusters · "
+        f"[bold]{result.coverage():.0%}[/] ever retrieved · {result.elapsed_ms:.0f} ms"
+    )
+    if result.explained_variance is not None:
+        colour = "yellow" if result.explained_variance < 0.25 else "dim"
+        console.print(
+            f"[{colour}]the two axes capture {result.explained_variance:.0%} of the "
+            f"variance — read the layout loosely[/]"
+        )
+    for note in result.notes:
+        console.print(f"[dim]{note}[/]")
+    console.print()
+
+    table = Table(box=None)
+    table.add_column("cluster", style="bold cyan", justify="right")
+    table.add_column("chunks", justify="right")
+    table.add_column("retrieved", justify="right")
+    table.add_column("coherence", justify="right", style="dim")
+    table.add_column("distinctive terms")
+    for cluster in result.clusters:
+        share = float(cluster["retrieved_share"])
+        colour = "green" if share >= 0.5 else "yellow" if share > 0 else "red"
+        table.add_row(
+            str(cluster["id"]),
+            str(cluster["size"]),
+            f"[{colour}]{share:.0%}[/]",
+            f"{float(cluster['coherence']):.2f}",
+            str(cluster["label"]),
+        )
+    console.print(table)
+
+    dead = [c for c in result.clusters if float(c["retrieved_share"]) == 0.0]
+    if dead:
+        console.print(
+            f"\n[yellow]{len(dead)} cluster(s) have never been retrieved[/] "
+            f"[dim]— redundant, or unreachable by how people actually ask[/]"
+        )
+
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(render_corpus_map(result), encoding="utf-8")
+        console.print(f"\n[dim]svg:[/] {output}")
+
+
+@app.command()
 def connectors() -> None:
     """List the registered connectors and what they accept."""
     knowledge_base = _open()
