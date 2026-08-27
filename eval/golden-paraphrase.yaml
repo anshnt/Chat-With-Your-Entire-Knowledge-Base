@@ -1,0 +1,111 @@
+# Hand-written golden set for this repository's own documentation.
+#
+# Every question is deliberately phrased in *different* words from the passage
+# that answers it. That is the whole point: a set generated from the corpus
+# inherits the corpus's vocabulary and therefore over-rewards BM25, which makes
+# it useless for judging whether dense retrieval or fusion is pulling its weight.
+#
+# Expectations are text snippets rather than chunk ids, so this file survives
+# re-chunking and re-ingestion.
+#
+# Reproduce with:
+#   kb --data-dir /tmp/kbeval ingest ./docs ./README.md
+#   kb --data-dir /tmp/kbeval eval run eval/golden-paraphrase.yaml --sweep full
+
+name: paraphrase
+collection: default
+description: >-
+  Questions about this repository's documentation, written in vocabulary that
+  differs from the passages answering them, so lexical and dense retrieval are
+  measured on a level footing.
+
+queries:
+  - id: p001
+    query: how much do the top two positions differ once combined?
+    must_contain: ["rank 1 and rank 2 differ by ~1.6%"]
+    tags: [paraphrase, fusion]
+
+  - id: p002
+    query: how big does the index get for a corpus of that size?
+    must_contain: ["50k chunks × 1024 dims is ~200 MB"]
+    tags: [paraphrase, storage]
+
+  - id: p003
+    query: why restrict the candidate set before choosing the best results rather than afterwards?
+    must_contain: ["silently loses recall exactly when the filter is"]
+    tags: [paraphrase, storage]
+
+  - id: p004
+    query: how are running heads and page furniture detected and discarded?
+    must_contain: ["a line appearing on ≥60% of pages"]
+    tags: [paraphrase, pdf]
+
+  - id: p005
+    query: what happens when a file was saved with an unusual character set?
+    must_contain: ["UTF-8, then UTF-8-BOM, then CP1252, then Latin-1"]
+    tags: [paraphrase, connectors]
+
+  - id: p006
+    query: how does a link land on the right words inside a page we do not control?
+    must_contain: ["spec, so the browser scrolls to and highlights"]
+    tags: [paraphrase, locators]
+
+  - id: p007
+    query: why does repeating a word many times not dominate the vector?
+    must_contain: ["sublinear term-frequency damping"]
+    tags: [paraphrase, embeddings]
+
+  - id: p008
+    query: what stops a mismatched figure from being reported as trustworthy however lenient the setting?
+    must_contain: ["caps the support score below the unsupported boundary"]
+    tags: [paraphrase, verification]
+
+  - id: p009
+    query: why does adding filler text not improve the trust score?
+    must_contain: ["excluded from the denominator"]
+    tags: [paraphrase, verification]
+
+  - id: p010
+    query: how small is the locally-run pairwise scoring model?
+    must_contain: ["~90 MB, CPU"]
+    tags: [paraphrase, reranking]
+
+  - id: p011
+    query: what does the system do when the query contains characters the search engine treats specially?
+    must_contain: ["syntax error rather than a query"]
+    tags: [paraphrase, lexical]
+
+  - id: p012
+    query: why not hand the model a fragment of a longer passage?
+    must_contain: ["citation pointing at text the model was never shown"]
+    tags: [paraphrase, generation]
+
+  - id: p013
+    query: what stops one long file from dominating the measurements?
+    must_contain: ["one long file cannot dominate the set"]
+    tags: [paraphrase, evaluation]
+
+  - id: p014
+    query: how does the system avoid returning several copies of the same fact?
+    must_contain: ["one fact repeated k times"]
+    tags: [paraphrase, mmr]
+
+  - id: p015
+    query: what happens to a document if turning its text into vectors fails partway?
+    must_contain: ["searchable over BM25"]
+    tags: [paraphrase, ingestion]
+
+  - id: p016
+    query: why is a question about the capital of France not answered from the corpus?
+    must_contain: ["relevance floor"]
+    tags: [paraphrase, generation]
+
+  - id: p017
+    query: which folders are left out when a tree is walked?
+    must_contain: ["node_modules"]
+    tags: [paraphrase, connectors]
+
+  - id: p018
+    query: how are the two rankings weighted differently when the offline vectoriser is in use?
+    must_contain: ["lexical-overlap model, not a semantic"]
+    tags: [paraphrase, fusion]

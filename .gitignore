@@ -24,6 +24,9 @@ frontend/.vite/
 .env
 .env.local
 
+# Evaluation output (the committed charts live in docs/assets/)
+eval/report/
+
 # Runtime data
 data/
 *.db
