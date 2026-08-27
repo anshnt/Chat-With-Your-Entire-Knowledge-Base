@@ -376,3 +376,28 @@ class TestShippedGoldenSet:
         assert len(golden) >= 15
         assert all(q.must_contain for q in golden.queries)
         assert len({q.id for q in golden.queries}) == len(golden)
+
+
+class TestConnectorsCommand:
+    def test_lists_connectors_in_precedence_order(
+        self, runner: CliRunner, base_args: list[str]
+    ) -> None:
+        result = runner.invoke(app, [*base_args, "connectors"])
+        assert result.exit_code == 0
+        for name in ("notion", "markdown", "pdf", "youtube", "github", "web"):
+            assert name in result.output
+        # The web connector claims any URL, so it must come last.
+        assert result.output.index("youtube") < result.output.index("any http(s) URL")
+
+    def test_ingest_accepts_the_connector_options(
+        self, runner: CliRunner, base_args: list[str], tmp_path: Path
+    ) -> None:
+        checkout = tmp_path / "repo"
+        (checkout / "src").mkdir(parents=True)
+        (checkout / "src" / "app.py").write_text("def handler():\n    return 1\n")
+        result = runner.invoke(
+            app,
+            [*base_args, "ingest", "anshnt/demo", "--local", str(checkout), "--ref", "main"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "documents" in result.output

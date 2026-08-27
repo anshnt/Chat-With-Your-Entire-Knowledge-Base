@@ -100,6 +100,12 @@ class ConnectorRegistry:
 
         candidate = Path(source.removeprefix("file://")).expanduser()
         if candidate.is_dir():
+            # A connector that claims the *directory* wants the whole tree: a
+            # Notion export needs its nesting to reconstruct the page hierarchy,
+            # and walking it here would hand over orphaned files instead.
+            if self.can_handle(str(candidate)):
+                yield str(candidate)
+                return
             yield from self._walk(candidate)
             return
         if candidate.is_file():
@@ -163,11 +169,14 @@ def _register_optional(registry: ConnectorRegistry, settings: Settings) -> None:
     Keeps the registry additive: a new connector module becomes available by
     existing, without editing this function's callers.
     """
+    # Order is precedence. The web connector claims *any* http(s) URL, so the
+    # connectors that recognise a specific kind of URL must be registered first
+    # or a github.com or youtube.com link is scraped as a generic page.
     for module_name, class_name in (
         ("kb.ingest.notion", "NotionConnector"),
-        ("kb.ingest.web", "WebConnector"),
-        ("kb.ingest.github", "GitHubConnector"),
         ("kb.ingest.youtube", "YouTubeConnector"),
+        ("kb.ingest.github", "GitHubConnector"),
+        ("kb.ingest.web", "WebConnector"),
     ):
         try:
             module = __import__(module_name, fromlist=[class_name])
