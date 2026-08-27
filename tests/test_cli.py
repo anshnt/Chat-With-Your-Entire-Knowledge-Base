@@ -401,3 +401,35 @@ class TestConnectorsCommand:
         )
         assert result.exit_code == 0, result.output
         assert "documents" in result.output
+
+
+class TestMapCommand:
+    def test_prints_the_cluster_table(self, runner: CliRunner, ingested: list[str]) -> None:
+        result = runner.invoke(app, [*ingested, "map"])
+        assert result.exit_code == 0, result.output
+        assert "clusters" in result.output
+        assert "distinctive terms" in result.output
+
+    def test_reports_pca_variance_as_a_caveat(self, runner: CliRunner, ingested: list[str]) -> None:
+        result = runner.invoke(app, [*ingested, "map", "--method", "pca"])
+        assert result.exit_code == 0
+        assert "variance" in result.output
+
+    def test_flags_never_retrieved_clusters(self, runner: CliRunner, ingested: list[str]) -> None:
+        result = runner.invoke(app, [*ingested, "map"])
+        assert result.exit_code == 0
+        assert "never been retrieved" in result.output
+
+    def test_writes_an_svg(self, runner: CliRunner, ingested: list[str], tmp_path: Path) -> None:
+        output = tmp_path / "nested" / "map.svg"
+        result = runner.invoke(app, [*ingested, "map", "-o", str(output)])
+        assert result.exit_code == 0, result.output
+        assert output.is_file()
+        import xml.dom.minidom
+
+        xml.dom.minidom.parse(str(output))
+
+    def test_empty_collection(self, runner: CliRunner, base_args: list[str]) -> None:
+        result = runner.invoke(app, [*base_args, "map"])
+        assert result.exit_code == 0
+        assert "nothing to plot" in result.output

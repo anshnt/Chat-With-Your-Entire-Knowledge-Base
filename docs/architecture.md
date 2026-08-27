@@ -469,3 +469,96 @@ Multiple markers on one sentence mean "any of these supports it", so support is
 aggregated with `max` — not the mean, which would punish a correct citation for
 being listed beside a weaker one. The judge loop short-circuits on a confident
 yes, keeping the common case to one call.
+
+## Corpus visualisation
+
+A map of unlabelled dots is a screensaver. What makes one useful is answering
+questions you cannot ask any other way: does this corpus cover what people
+actually ask, are two documents saying the same thing, and is there a region
+nobody's queries ever reach.
+
+### Projection
+
+Three methods, chosen by what is installed: **UMAP** (best structure, heavy
+dependency), **t-SNE** (via scikit-learn), then a ~30-line numpy **PCA**. PCA is a
+first-class fallback rather than an error because a map that exists is worth more
+than a perfect map that does not — and it is honest about being linear: the
+response reports `explained_variance`, and the CLI warns when it is low.
+
+Two details that matter more than the method:
+
+**Determinism.** A map whose points move on every reload cannot be compared
+across runs. Every method is seeded, and the PCA sign convention is fixed — each
+component's largest-magnitude loading is forced positive — because eigenvector
+signs are otherwise arbitrary and would mirror the plot at random.
+
+**Aspect-preserving normalisation.** Coordinates are scaled into `[0,1]²` by the
+*larger* axis range, not per axis. Independent scaling would distort exactly the
+distances the projection exists to show.
+
+PCA uses SVD rather than an eigendecomposition of the covariance matrix: better
+conditioned, and it avoids materialising a `dim × dim` matrix, which for
+1536-dimensional embeddings is the expensive part.
+
+### Clustering
+
+k-means in numpy, with k-means++ seeding. The dependency-free path matters
+because this is the feature most likely to be looked at first, on a fresh clone.
+
+- **k-means++ seeding**, because random seeding routinely puts two centroids
+  inside one dense topic and none in another, which no amount of iteration
+  recovers from.
+- **Empty clusters are reseeded** to the point furthest from its centroid. An
+  empty cluster produces NaN centroids, which would poison the whole map.
+- **Distances via the expanded form** `‖a−b‖² = ‖a‖² + ‖b‖² − 2a·b`, so the whole
+  assignment step is one matrix multiply.
+- **k defaults to `√(n/2)`**, clamped — better than a fixed default, which gives
+  8 clusters for 12 chunks and 8 for 12,000.
+
+### Automatic cluster labels
+
+The obvious approach — the cluster's most frequent terms — produces *"the, and,
+retrieval"* for every cluster. What works is a **contrast** statistic: terms
+frequent *inside* the cluster and rare *outside* it. That is log-odds with an
+informative Dirichlet prior (Monroe et al.), which is the standard tool for
+exactly this question and is well-behaved on small clusters where a raw frequency
+ratio explodes.
+
+Two refinements on top:
+
+- A term must appear in **at least two chunks** of the cluster. A term repeated
+  many times in one chunk is that chunk's vocabulary, not the cluster's, and
+  without this a single verbose passage names the whole region.
+- Ties break toward terms spread across more of the cluster.
+
+Each cluster also reports **coherence** — the mean similarity of its members to
+the centroid. A low value means the cluster is a grab-bag and its label should not
+be trusted, which is worth surfacing rather than hiding behind a confident-looking
+name.
+
+### Retrieval counts are the point
+
+Every chunk carries how often it has been retrieved, from the `retrieval_events`
+table. `coverage()` is the share of chunks retrieved at least once, and it is the
+most useful number on the page: it says how much of the corpus is doing any work
+at all. A cluster with 0% retrieval is either redundant or unreachable by how
+people actually ask — both actionable, and neither visible without logging
+retrievals.
+
+In the SVG, never-retrieved points are drawn **hollow** rather than in a different
+colour, so the distinction survives greyscale printing and colour blindness. Size
+encodes retrieval count on a log scale, because one chunk retrieved 40 times would
+otherwise dwarf everything and the interesting distinction is between zero, a few,
+and many.
+
+### Caching
+
+A corpus map touches every vector and every chunk's text, so it is cached against
+the store's write counter — the same invalidation signal the vector matrix uses.
+It is recomputed exactly when the corpus changes and never otherwise (a cached
+rebuild is ~0.015 ms against ~70 ms cold).
+
+Above `max_points` chunks the map is **sampled with even spacing, not randomly**:
+even spacing over the store's ordering keeps the sample stable between calls, so
+the map does not reshuffle on reload, and spreads it across documents since chunks
+are stored in ingestion order. The response always says how many were sampled.

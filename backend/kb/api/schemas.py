@@ -327,3 +327,91 @@ class AskResponse(BaseModel):
             total_ms=answer.total_ms(),
             retrieval=retrieval,
         )
+
+
+# --------------------------------------------------------------------------- #
+# Visualisation
+# --------------------------------------------------------------------------- #
+
+
+class MapPointView(BaseModel):
+    """One chunk, placed on the corpus map."""
+
+    chunk_id: str
+    document_id: str
+    document_title: str
+    x: float = Field(description="Normalised to [0, 1]")
+    y: float = Field(description="Normalised to [0, 1]")
+    cluster: int
+    source_type: str | None = None
+    kind: str
+    snippet: str
+    heading: str = ""
+    tokens: int = 0
+    retrievals: int = Field(
+        default=0, description="How often this chunk has been retrieved; 0 means never"
+    )
+
+
+class MapClusterView(BaseModel):
+    """A cluster and what distinguishes it."""
+
+    id: int
+    label: str
+    terms: list[str] = Field(default_factory=list)
+    size: int
+    coherence: float = Field(
+        default=0.0,
+        description="Mean similarity of members to the centroid; low means the label is unreliable",
+    )
+    retrieved_share: float = 0.0
+
+
+class CorpusMapResponse(BaseModel):
+    collection: str
+    method: str = Field(description="The projection that actually ran")
+    n_chunks: int
+    n_plotted: int
+    sampled: bool = False
+    explained_variance: float | None = Field(
+        default=None,
+        description="PCA only: share of variance the two axes capture. Low means the plot is misleading.",
+    )
+    retrieval_coverage: float = 0.0
+    notes: list[str] = Field(default_factory=list)
+    elapsed_ms: float = 0.0
+    clusters: list[MapClusterView] = Field(default_factory=list)
+    points: list[MapPointView] = Field(default_factory=list)
+
+
+class GraphNode(BaseModel):
+    id: str
+    title: str
+    source_type: str | None = None
+    n_chunks: int = 0
+
+
+class GraphEdge(BaseModel):
+    source: str
+    target: str
+    weight: float
+
+
+class DocumentGraphResponse(BaseModel):
+    collection: str
+    nodes: list[GraphNode] = Field(default_factory=list)
+    edges: list[GraphEdge] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class CoverageResponse(BaseModel):
+    collection: str
+    n_chunks: int
+    n_retrieved: int
+    coverage: float = Field(description="Share of chunks retrieved at least once")
+    n_queries_logged: int = 0
+    most_retrieved: list[dict[str, Any]] = Field(default_factory=list)
+    never_retrieved: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Chunks no query has ever reached: redundant, or unreachable",
+    )

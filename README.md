@@ -13,7 +13,7 @@ are the ones a demo skips:
 | **Reranking** | Four providers behind one interface: offline cross-feature, local cross-encoder, hosted (Cohere/Voyage), listwise LLM | Fusion optimises recall at k=50; the generator sees k=8. Reranking converts that recall into precision — and gives *discriminative* scores where RRF's are compressed |
 | **Citation verification** | Every answer sentence is checked against the chunk it cites; wrong figures, contradictions and uncited claims are flagged | A citation nobody checked is decoration. Catches the failure that matters: a fluent paraphrase with a wrong number, cited to a real page |
 | **Retrieval evaluation** | Recall@k, Precision@k, MRR, MAP, nDCG@k over a golden set, config sweeps, SVG reports | Without it every retrieval change is a vibe. With it, "hybrid beats dense" is a number — including when the number disagrees with you |
-| **Document visualization** | 2D projection of the corpus, clustering, and a retrieval heatmap | Shows what the knowledge base actually contains, and which parts of it ever get used |
+| **Document visualization** | 2D projection with auto-labelled clusters, a document similarity graph, and per-chunk retrieval counts | Shows what the corpus actually contains — and which parts of it no query has ever reached |
 
 **It runs with no API keys.** The default embedder and generator are
 deterministic local implementations, so `git clone && pytest` works offline and
@@ -353,6 +353,57 @@ query ──┬──→ BM25        ──┐
 One SQLite file holds documents, chunks, the BM25 index and the vectors, so the
 lexical and dense views of the corpus can never drift apart. See
 [`docs/architecture.md`](docs/architecture.md).
+
+## Corpus visualization
+
+```bash
+kb map -o corpus-map.svg
+```
+
+![Corpus map](docs/assets/corpus-map.svg)
+
+Every chunk projected to 2D, k-means clustered, each cluster labelled
+automatically. **Filled dots have been retrieved at least once; hollow ones never
+have** — outline rather than colour, so it survives greyscale and colour
+blindness, and it is exactly the distinction the map exists to show. Point size
+is retrieval count on a log scale.
+
+```
+91 of 91 chunks · PCA · 7 clusters · 35% ever retrieved · 77 ms
+
+ cluster  chunks  retrieved  distinctive terms
+       0       9        33%  syntax · chromium · controls · fragments
+       3       7        14%  rows · hashing · cosine · skipped
+       ...
+3 cluster(s) have never been retrieved — redundant, or unreachable by how people actually ask
+```
+
+Three deliberate choices:
+
+**Cluster labels are contrast terms, not frequent terms.** "Most common words in
+the cluster" gives you *"the, and, retrieval"* for every cluster. These come from
+log-odds with a Dirichlet prior — frequent *inside* the cluster and rare
+*outside* it — which is why they read as `sqlite · float32 · heatmap` and
+`githublocator · notionlocator · pdflocator`. A term appearing in only one chunk
+is excluded, so a single verbose passage cannot name a whole region.
+
+**PCA is a first-class fallback, and says so.** UMAP is preferred, then t-SNE, then
+a ~30-line numpy PCA — because a map that exists beats a perfect map that
+doesn't. When PCA runs, the response reports `explained_variance` and the CLI
+warns when it is low: *"the two axes capture 10% of the variance — read the
+layout loosely"*. Every projection is seeded and the PCA sign convention is
+fixed, so the map is comparable across runs instead of mirroring at random.
+
+**The document graph answers what the scatter plot can't.** Which *documents*
+overlap — near-duplicates, a doc and its changelog, the same runbook exported
+twice. Those are the documents competing for the same top-k slot, so finding them
+is actionable.
+
+| Endpoint | Question it answers |
+|---|---|
+| `GET /api/collections/{c}/map` | Where is everything, and what is each region about? |
+| `GET /api/collections/{c}/graph` | Which documents overlap? |
+| `GET /api/collections/{c}/coverage` | How much of the corpus does any work — and which chunks never do? |
 
 ## Configuration
 
