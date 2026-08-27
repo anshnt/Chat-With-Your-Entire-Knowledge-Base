@@ -233,3 +233,23 @@ class TestAsk:
         result = runner.invoke(app, [*ingested, "ask", "who won the 1998 world cup?"])
         assert result.exit_code == 0
         assert "did not cover" in result.output
+
+
+class TestAskVerification:
+    def test_faithfulness_is_reported(self, runner: CliRunner, ingested: list[str]) -> None:
+        result = runner.invoke(
+            app, [*ingested, "ask", "what does the damping constant k default to?"]
+        )
+        assert result.exit_code == 0
+        assert "faithfulness" in result.output
+
+    def test_verification_can_be_skipped(self, runner: CliRunner, ingested: list[str]) -> None:
+        result = runner.invoke(app, [*ingested, "ask", "fusion", "--no-verify"])
+        assert result.exit_code == 0
+        assert "faithfulness" not in result.output
+
+    def test_json_output_carries_verdicts(self, runner: CliRunner, ingested: list[str]) -> None:
+        result = runner.invoke(app, [*ingested, "ask", "fusion", "--json"])
+        payload = json.loads(result.output)
+        assert payload["verified"] is True
+        assert payload["sentences"]

@@ -579,11 +579,29 @@ class Answer(BaseModel):
         return next((c for c in self.citations if c.marker == marker), None)
 
     def unsupported_sentences(self) -> list[AnswerSentence]:
-        """Sentences a reader should not take on trust."""
+        """Sentences whose cited source does not support them, or that cite nothing."""
         return [
             s
             for s in self.sentences
             if s.verdict in (SupportVerdict.UNSUPPORTED, SupportVerdict.UNCITED)
+        ]
+
+    def flagged_sentences(self) -> list[AnswerSentence]:
+        """Every sentence a reader should not take on trust.
+
+        Wider than :meth:`unsupported_sentences`: it includes ``partial``, because
+        "the source is related but does not quite say this" is exactly the case a
+        reader most needs pointed out — it is the one that reads as fine.
+        """
+        return [
+            s
+            for s in self.sentences
+            if s.verdict
+            in (
+                SupportVerdict.UNSUPPORTED,
+                SupportVerdict.UNCITED,
+                SupportVerdict.PARTIAL,
+            )
         ]
 
     def total_ms(self) -> float:

@@ -228,6 +228,7 @@ class HealthResponse(BaseModel):
     reranker: str | None = None
     generator: str = ""
     generation_model: str = ""
+    verifier: str | None = None
     connectors: list[str] = Field(default_factory=list)
 
 
@@ -263,6 +264,10 @@ class AskRequest(BaseModel):
     include_retrieval: bool = Field(
         default=True, description="Include the full retrieval diagnostics in the response"
     )
+    verify: bool | None = Field(
+        default=None,
+        description="Verify citations. Defaults to the server setting; false skips the stage.",
+    )
 
 
 class AskResponse(BaseModel):
@@ -278,6 +283,9 @@ class AskResponse(BaseModel):
     verified: bool = False
     faithfulness: float | None = None
     unsupported_count: int = 0
+    flagged_count: int = Field(
+        default=0, description="Unsupported, uncited, or only partially supported claims"
+    )
     context_chunks: int = 0
     context_tokens: int = 0
     timings_ms: dict[str, float] = Field(default_factory=dict)
@@ -312,6 +320,7 @@ class AskResponse(BaseModel):
             verified=answer.verified,
             faithfulness=answer.faithfulness,
             unsupported_count=len(answer.unsupported_sentences()),
+            flagged_count=len(answer.flagged_sentences()),
             context_chunks=answer.context_chunks,
             context_tokens=answer.context_tokens,
             timings_ms=answer.timings_ms,

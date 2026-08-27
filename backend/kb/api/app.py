@@ -98,6 +98,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
             generator=knowledge_base.generator.name,
             generation_model=knowledge_base.generator.model,
+            verifier=(
+                knowledge_base.verifier.name if knowledge_base.verifier is not None else None
+            ),
             connectors=knowledge_base.registry.names(),
         )
 
