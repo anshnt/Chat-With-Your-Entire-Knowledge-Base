@@ -10,7 +10,7 @@ are the ones a demo skips:
 | | What it does | Why it matters |
 |---|---|---|
 | **Hybrid search** | BM25 (SQLite FTS5) fused with dense cosine retrieval via Reciprocal Rank Fusion | Dense retrieval alone misses exact identifiers, error codes and rare terms; BM25 alone misses paraphrase. The chunk BM25 ranks 40th and the vectors rank 35th is often the right answer — and invisible to either at k=8 |
-| **Reranking** | Cross-encoder / listwise second stage over fused candidates | Fusion optimises recall at k=50; the generator sees k=8. Reranking is what converts that recall into precision |
+| **Reranking** | Four providers behind one interface: offline cross-feature, local cross-encoder, hosted (Cohere/Voyage), listwise LLM | Fusion optimises recall at k=50; the generator sees k=8. Reranking converts that recall into precision — and gives *discriminative* scores where RRF's are compressed |
 | **Citation verification** | Every answer sentence is checked against the chunk it cites, and unsupported claims are flagged | A citation nobody verified is decoration. This turns "trust me" into a measurable per-claim support score |
 | **Retrieval evaluation** | Recall@k, Precision@k, MRR, MAP, nDCG@k over a golden set, with config sweeps | Without it, every retrieval change is a vibe. With it, "hybrid beats dense" is a number you can reproduce |
 | **Document visualization** | 2D projection of the corpus, clustering, and a retrieval heatmap | Shows what the knowledge base actually contains, and which parts of it ever get used |
@@ -54,6 +54,41 @@ see *why* each chunk is there:
    dense=0.6902@4 fused=0.0161
    nDCG rewards putting the most relevant chunk first, not merely…
 ```
+
+## Reranking
+
+Fusion maximises recall over 50 candidates; the answer only ever sees 8. The
+reranking stage is what turns the former into the latter, and it is the highest-
+leverage single addition to a naive pipeline — a cross-encoder reads the query
+and the passage *together*, so it can judge relevance in ways that comparing two
+independently-computed embeddings structurally cannot.
+
+Four providers behind one interface:
+
+| `KB_RERANK_PROVIDER` | What it is | Needs |
+|---|---|---|
+| `lexical` *(default)* | Offline query-passage features: IDF-weighted coverage, proximity, exact phrase, first-match position, heading match | nothing |
+| `cross_encoder` | Local `ms-marco-MiniLM` cross-encoder, ~90 MB, CPU-friendly | `pip install 'kb-chat[local]'` |
+| `cohere` / `voyage` | Hosted rerank APIs | an API key |
+| `llm` | Listwise: the model sees all candidates and orders them, so it can make *comparative* judgements | an API key |
+
+A reranker that fails, times out, or returns a malformed ordering degrades to the
+fused order rather than failing the query — the candidates were already relevant,
+just less well sorted. A missing optional dependency or API key falls back to the
+offline reranker with a warning.
+
+The second-order benefit is score quality. RRF scores are compressed by
+construction (rank 1 vs rank 2 differ by ~1.6%), which makes a `min_score`
+threshold useless. Rerank scores separate:
+
+```
+fusion only:   0.0164  0.0161  0.0159    ← which of these is actually right?
++ reranking:   1.7448  0.8685  0.6778    ← the first one
+```
+
+`kb eval` (see [`docs/evaluation.md`](docs/evaluation.md)) is how you decide
+whether a hosted reranker earns its latency on *your* corpus, rather than taking
+a benchmark's word for it.
 
 ## HTTP API
 
@@ -121,6 +156,9 @@ KB_FUSION_METHOD=rrf              # rrf | weighted | max
 KB_TOP_K=8
 KB_CANDIDATE_K=50                 # candidates per retriever before fusion
 KB_USE_MMR=true                   # diversify the final set
+
+KB_RERANK_PROVIDER=cross_encoder  # lexical (default, offline) | cross_encoder | cohere | voyage | llm
+KB_RERANK_TOP_N=30                # candidates handed to the reranker
 ```
 
 ## Development

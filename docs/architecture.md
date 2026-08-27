@@ -230,3 +230,80 @@ reported in `IngestionReport.errors` while the rest of the directory succeeds, a
 a document whose embedding step fails is still **searchable over BM25** — `kb embed`
 resumes the job later. That resumability matters when embedding a large corpus
 against a rate-limited API.
+
+## Reranking
+
+Fusion optimises recall at `candidate_k`; the generator only ever sees `top_k`.
+Reranking is the stage that converts one into the other. It is the highest-
+leverage single addition to a naive pipeline, for a structural reason: a
+cross-encoder concatenates the query and the passage into one sequence and runs
+attention across both, so it can condition on the query *while reading* the
+passage. Comparing two independently-computed embeddings cannot express that, no
+matter how good the embeddings are. The cost is O(candidates) model calls, which
+is exactly why the stage sits after fusion — tens of candidates, not tens of
+thousands of chunks.
+
+All four providers implement `Reranker.score(query, candidates) -> list[float]`
+and inherit the reordering, provenance and failure handling from the base class:
+
+| Provider | Kind | Notes |
+|---|---|---|
+| `lexical` *(default)* | Offline cross-features | No keys, no network, deterministic |
+| `cross_encoder` | Local model | `ms-marco-MiniLM-L-6-v2`, ~90 MB, CPU |
+| `cohere` / `voyage` | Hosted API | Best quality, worst latency |
+| `llm` | Listwise | Sees all candidates at once, orders them |
+
+### The offline reranker is not a stub
+
+It computes the query-passage interaction features a first-stage retriever
+structurally cannot, because BM25 scores terms independently and a bi-encoder
+never sees the pair:
+
+1. **IDF-weighted term coverage** — how much of the query's *information* the
+   passage covers, not how many words. IDF is computed over the candidate set
+   itself, so it adapts per query with no corpus statistics to maintain.
+2. **Proximity** — the width of the narrowest window containing all matched
+   terms, via a k-way merge. `fusion … 400 words … ranks` and `fusion of ranks`
+   are identical under BM25 and very different here.
+3. **Exact phrase match** — the longest contiguous run of query terms. The
+   clearest signal a bag-of-words model throws away.
+4. **First-match position** — passages that answer immediately beat passages that
+   mention the topic near the end.
+5. **Heading match** — a hit in the heading path means the *section* is about the
+   query, not just one sentence.
+
+Weights are chosen for interpretability, not fitted. The point is a strong,
+explainable baseline that `kb eval` can measure a hosted cross-encoder
+*against* — so "is the upgrade worth its latency on this corpus" is a
+measurement rather than an assumption.
+
+### Failure is not an option the pipeline exposes
+
+Every failure mode degrades to the fused order and keeps every candidate:
+
+- an exception in `score` → fused order, warning logged;
+- a wrong-length score list → fused order, warning logged;
+- a hosted provider returning only its top *n* → the omitted candidates are
+  ranked below the returned ones rather than dropped, preserving the recall
+  fusion worked for;
+- a listwise LLM returning duplicates, hallucinated indices, omissions or prose →
+  the parser yields a complete permutation regardless;
+- a missing optional dependency or API key → the offline reranker, with a
+  warning.
+
+Ties break on `fusion_score`, so a reranker that cannot separate two passages
+leaves the retrieval order intact instead of shuffling it.
+
+### Score quality, not just ordering
+
+RRF scores are compressed by construction — `k = 60` means rank 1 and rank 2
+differ by ~1.6% — which makes a `min_score` threshold useless. Rerank scores
+separate:
+
+```
+fusion only:   0.0164  0.0161  0.0159
++ reranking:   1.7448  0.8685  0.6778
+```
+
+Both stages' scores are kept on every result (`fusion_score` and `rerank_score`),
+so the ranking stays explainable after reranking rather than becoming a black box.

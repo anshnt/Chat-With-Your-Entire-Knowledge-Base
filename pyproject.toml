@@ -36,6 +36,7 @@ dependencies = [
 [project.optional-dependencies]
 llm = ["anthropic>=0.34"]
 embeddings = ["voyageai>=0.2", "openai>=1.30"]
+rerank = ["cohere>=5.0"]
 local = ["sentence-transformers>=3.0", "torch>=2.2"]
 youtube = ["youtube-transcript-api>=0.6"]
 viz = ["scikit-learn>=1.4", "umap-learn>=0.5"]
@@ -47,7 +48,7 @@ dev = [
   "mypy>=1.10",
   "types-PyYAML",
 ]
-all = ["kb-chat[llm,embeddings,youtube,viz]"]
+all = ["kb-chat[llm,embeddings,rerank,youtube,viz]"]
 
 [project.scripts]
 kb = "kb.cli:main"
