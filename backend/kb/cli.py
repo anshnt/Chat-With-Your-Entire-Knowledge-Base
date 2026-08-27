@@ -14,6 +14,7 @@ intuition for what hybrid retrieval is actually doing.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -298,6 +299,94 @@ def search(
 
 
 @app.command()
+def ask(
+    query: Annotated[str, typer.Argument(help="Your question")],
+    collection: Annotated[str, typer.Option("--collection", "-c")] = "default",
+    top_k: Annotated[int, typer.Option("--top-k", "-k", help="Chunks of context")] = 8,
+    strategy: Annotated[RetrievalStrategy | None, typer.Option("--strategy", "-s")] = None,
+    rerank: Annotated[bool | None, typer.Option("--rerank/--no-rerank")] = None,
+    mmr: Annotated[bool, typer.Option("--mmr/--no-mmr", help="Diversify context")] = False,
+    source_type: Annotated[
+        list[SourceType] | None, typer.Option("--source", help="Restrict to source types")
+    ] = None,
+    show_sources: Annotated[
+        bool, typer.Option("--sources/--no-sources", help="Print the cited sources")
+    ] = True,
+    show_context: Annotated[
+        bool, typer.Option("--context", help="Print the retrieval that fed the answer")
+    ] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Machine-readable output")] = False,
+) -> None:
+    """Ask a question and get an answer with citations.
+
+    Citations print with their deep links, so a claim can be checked against the
+    exact page, line range or timestamp it came from.
+    """
+    knowledge_base = _open()
+    try:
+        answer = knowledge_base.ask(
+            query,
+            collection=collection,
+            top_k=top_k,
+            strategy=strategy,
+            rerank=rerank,
+            use_mmr=mmr or None,
+            source_types=list(source_type) if source_type else None,
+        )
+    except KBError as exc:
+        _fail(exc)
+        return
+
+    if as_json:
+        console.print_json(answer.model_dump_json(exclude={"retrieval"}))
+        return
+
+    console.print()
+    console.print(_highlight_markers(answer.text))
+    console.print()
+
+    if show_sources and answer.citations:
+        table = Table(box=None, show_header=False, pad_edge=False)
+        table.add_column("", style="bold cyan", width=5)
+        table.add_column("")
+        for citation in answer.citations:
+            label = f"[bold]{citation.document_title}[/]"
+            if citation.label:
+                label += f" [dim]— {citation.label}[/]"
+            if citation.deep_link:
+                label += f"\n[dim blue]{citation.deep_link}[/]"
+            table.add_row(f"[{citation.marker}]", label)
+        console.print(table)
+        console.print()
+
+    if answer.refused:
+        console.print("[yellow]the sources did not cover this question[/]")
+
+    footer = (
+        f"[dim]{answer.generator}"
+        + (f" ({answer.model})" if answer.model and answer.model != answer.generator else "")
+        + f" · {answer.context_chunks} chunks, ~{answer.context_tokens} tokens"
+        f" · {answer.total_ms()}ms[/]"
+    )
+    if answer.faithfulness is not None:
+        unsupported = len(answer.unsupported_sentences())
+        colour = "green" if unsupported == 0 else "yellow"
+        footer += (
+            f"\n[{colour}]faithfulness {answer.faithfulness:.0%}"
+            + (f" · {unsupported} unsupported claim(s)" if unsupported else "")
+            + "[/]"
+        )
+    console.print(footer)
+
+    if show_context and answer.retrieval:
+        console.print("\n[bold]retrieved context[/]")
+        for index, scored in enumerate(answer.retrieval.results, start=1):
+            console.print(
+                f"  [cyan]{index}.[/] {scored.chunk.citation_label()} [dim]{scored.explain()}[/]"
+            )
+
+
+@app.command()
 def stats(
     collection: Annotated[str, typer.Option("--collection", "-c")] = "default",
 ) -> None:
@@ -499,6 +588,14 @@ def config() -> None:
         if key.endswith("_api_key"):
             payload[key] = "<set>" if payload[key] else ""
     console.print_json(json.dumps(payload, indent=2, default=str))
+
+
+_MARKER_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+
+
+def _highlight_markers(text: str) -> str:
+    """Make citation markers visually distinct in the terminal."""
+    return _MARKER_RE.sub(lambda m: f"[bold cyan]\\[{m.group(1)}][/]", text)
 
 
 def _snippet(text: str, width: int = 300) -> str:

@@ -215,3 +215,97 @@ class TestOpenAPI:
         assert "/api/search" in spec["paths"]
         assert "/api/ingest" in spec["paths"]
         assert spec["info"]["title"] == "Chat With Your Entire Knowledge Base"
+
+
+class TestAsk:
+    def test_answers_with_citations(self, client: TestClient) -> None:
+        response = client.post(
+            "/api/ask", json={"query": "what does the damping constant k default to?"}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["answer"]
+        assert body["generator"] == "extractive"
+        assert body["context_chunks"] > 0
+        for citation in body["citations"]:
+            assert citation["chunk_id"]
+            assert citation["deep_link"]
+            assert citation["marker"] >= 1
+
+    def test_sentences_carry_markers_and_spans(self, client: TestClient) -> None:
+        body = client.post("/api/ask", json={"query": "reciprocal rank fusion"}).json()
+        assert body["sentences"]
+        text = body["answer"]
+        for sentence in body["sentences"]:
+            assert text[sentence["char_start"] : sentence["char_end"]] == sentence["text"]
+
+    def test_every_marker_resolves_to_a_citation(self, client: TestClient) -> None:
+        body = client.post("/api/ask", json={"query": "how is fusion done?"}).json()
+        markers = {m for s in body["sentences"] for m in s["citation_markers"]}
+        available = {c["marker"] for c in body["citations"]}
+        assert markers <= available
+
+    def test_retrieval_diagnostics_are_included_by_default(self, client: TestClient) -> None:
+        body = client.post("/api/ask", json={"query": "fusion"}).json()
+        assert body["retrieval"] is not None
+        assert body["retrieval"]["strategy"] == "hybrid"
+
+    def test_retrieval_can_be_omitted(self, client: TestClient) -> None:
+        body = client.post("/api/ask", json={"query": "fusion", "include_retrieval": False}).json()
+        assert body["retrieval"] is None
+
+    def test_retrieval_overrides_are_honoured(self, client: TestClient) -> None:
+        body = client.post(
+            "/api/ask", json={"query": "fusion", "strategy": "lexical", "top_k": 2}
+        ).json()
+        assert body["retrieval"]["strategy"] == "lexical"
+        assert len(body["retrieval"]["hits"]) <= 2
+
+    def test_off_corpus_question_is_refused(self, client: TestClient) -> None:
+        body = client.post("/api/ask", json={"query": "who won the 1998 world cup?"}).json()
+        assert body["refused"] is True
+        assert body["citations"] == []
+
+    def test_blank_query_is_rejected(self, client: TestClient) -> None:
+        assert client.post("/api/ask", json={"query": ""}).status_code == 422
+
+    def test_empty_corpus_refuses(self, empty_client: TestClient) -> None:
+        body = empty_client.post("/api/ask", json={"query": "anything"}).json()
+        assert body["refused"] is True
+        assert body["context_chunks"] == 0
+
+
+class TestAskStream:
+    def _events(self, raw: str) -> list[tuple[str, dict]]:
+        import json
+
+        out: list[tuple[str, dict]] = []
+        for block in raw.strip().split("\n\n"):
+            lines = dict(line.split(": ", 1) for line in block.splitlines() if ": " in line)
+            if "event" in lines and "data" in lines:
+                out.append((lines["event"], json.loads(lines["data"])))
+        return out
+
+    def test_streams_deltas_then_done(self, client: TestClient) -> None:
+        response = client.post("/api/ask/stream", json={"query": "damping constant"})
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+
+        events = self._events(response.text)
+        assert [name for name, _ in events].count("done") == 1
+        deltas = [payload["text"] for name, payload in events if name == "delta"]
+        done = next(payload["answer"] for name, payload in events if name == "done")
+        assert "".join(deltas) == done["answer"]
+        assert done["citations"] or done["refused"]
+
+    def test_stream_reports_the_generator(self, client: TestClient) -> None:
+        response = client.post("/api/ask/stream", json={"query": "fusion"})
+        done = next(p["answer"] for n, p in self._events(response.text) if n == "done")
+        assert done["generator"] == "extractive"
+
+
+class TestHealthReportsGeneration:
+    def test_generator_is_reported(self, client: TestClient) -> None:
+        body = client.get("/api/health").json()
+        assert body["generator"] == "extractive"
+        assert body["generation_model"] == "extractive-v1"

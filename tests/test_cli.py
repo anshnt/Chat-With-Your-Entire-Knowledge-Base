@@ -199,3 +199,37 @@ class TestEmbedAndDelete:
         result = runner.invoke(app, [*ingested, "delete", "default", "--collection", "-y"])
         assert result.exit_code == 0
         assert "deleted collection" in result.output
+
+
+class TestAsk:
+    def test_prints_answer_and_sources(self, runner: CliRunner, ingested: list[str]) -> None:
+        result = runner.invoke(
+            app, [*ingested, "ask", "what does the damping constant default to?"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "60" in result.output
+        assert "[1]" in result.output
+        assert "extractive" in result.output
+
+    def test_json_output(self, runner: CliRunner, ingested: list[str]) -> None:
+        result = runner.invoke(app, [*ingested, "ask", "reciprocal rank fusion", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["text"]
+        assert payload["generator"] == "extractive"
+        assert "citations" in payload
+
+    def test_sources_can_be_hidden(self, runner: CliRunner, ingested: list[str]) -> None:
+        result = runner.invoke(app, [*ingested, "ask", "reciprocal rank fusion", "--no-sources"])
+        assert result.exit_code == 0
+        assert "extractive" in result.output
+
+    def test_context_flag_shows_the_retrieval(self, runner: CliRunner, ingested: list[str]) -> None:
+        result = runner.invoke(app, [*ingested, "ask", "fusion", "--context"])
+        assert result.exit_code == 0
+        assert "retrieved context" in result.output
+
+    def test_off_corpus_question_says_so(self, runner: CliRunner, ingested: list[str]) -> None:
+        result = runner.invoke(app, [*ingested, "ask", "who won the 1998 world cup?"])
+        assert result.exit_code == 0
+        assert "did not cover" in result.output

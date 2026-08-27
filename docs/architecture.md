@@ -307,3 +307,79 @@ fusion only:   0.0164  0.0161  0.0159
 
 Both stages' scores are kept on every result (`fusion_score` and `rerank_score`),
 so the ranking stays explainable after reranking rather than becoming a black box.
+
+## Answer generation
+
+The `Generator` base class owns everything that determines whether a citation is
+real; a provider implementation is only the part that produces text. That split
+is deliberate — the shared half is where the correctness lives.
+
+### Context packing
+
+Chunks go into the prompt in rank order until the token budget is spent, and a
+chunk is included **whole or not at all**. A truncated chunk yields a citation
+pointing at text the model was never shown, which is worse than one fewer
+source. The top-ranked chunk is always included, even if it alone exceeds the
+budget, because returning nothing would be worse still.
+
+Sources are labelled with a *marker* (`[1]`, `[2]`) rather than a chunk id. A
+model shown `chk_9f2a1c…` will cheerfully produce one that looks just like it;
+a small integer range is easy to constrain in the prompt and trivial to
+validate on the way out.
+
+### The three things that make a citation real
+
+**Markers are validated against the sources actually supplied.** The model's
+output is untrusted input. An invented `[9]` when six sources were given is
+stripped from the text — not rendered as a dead chip — and logged, because a
+model inventing source numbers is a signal about the prompt.
+
+**Markers attach to the sentence they belong to.** Citations are written *after*
+the claim: `…defaults to 60. [1]`. A sentence splitter that breaks on the period
+puts `[1]` at the head of the *next* sentence, silently attributing the citation
+to the wrong claim. Since verification is per-sentence, that would make every
+verdict meaningless, so `_reattach_trailing_markers` moves a leading marker run
+back onto the sentence it follows.
+
+**Empty retrieval refuses.** With no context, the generator says so. Answering
+from parametric knowledge at that point is the worst thing a grounded system can
+do, because the output is indistinguishable from a grounded answer.
+
+### The extractive generator
+
+It does not write prose — it selects the sentences from the retrieved chunks that
+best answer the question and cites each to its chunk. This is a design choice,
+not a placeholder: an extractive answer is **trivially faithful**, since every
+sentence is verbatim from a source. There is no mechanism by which it can
+hallucinate.
+
+That makes it the right default for a system about verified citations:
+
+- it needs no key, network or model, so the demo, the tests and CI exercise the
+  real end-to-end path including citation resolution;
+- it is deterministic, so verification tests can assert exact verdicts;
+- degrading to it when a provider is unavailable cannot introduce an unsupported
+  claim, which is unusual for a fallback;
+- it gives the evaluation harness a real floor to measure an LLM against.
+
+Selection details that matter:
+
+- **A relevance floor.** A sentence must cover at least 25% of the query's IDF
+  mass. Without it, the chunk-rank prior alone is enough to produce a confident,
+  fully-cited answer about reranking when asked the capital of France.
+- **MMR over sentences.** Relevance minus redundancy against what is already
+  selected. Without the redundancy term the answer becomes one fact restated from
+  four overlapping chunks — the characteristic failure of naive extractive
+  summarisation.
+- **The heading prefix is stripped before quoting.** `Retrieval › Fusion` is
+  valuable for retrieval and reads as a fragment in an answer.
+- **Table rows and code fences are skipped.** They score well on term overlap and
+  read as noise.
+
+### Streaming
+
+`Generator.stream` yields `(delta, None)` while generating, then `("", answer)`
+once. Citations cannot be resolved until the text is complete — a marker may be
+mid-emission — so the finished answer with its citations arrives as a separate
+terminal event rather than being patched in as it goes. The SSE endpoint maps
+that directly onto `delta` / `done` / `error` events.

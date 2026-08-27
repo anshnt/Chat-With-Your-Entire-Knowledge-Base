@@ -40,6 +40,9 @@ kb stats
 
 # Search it
 kb search "how does reciprocal rank fusion combine rankings?"
+
+# Or ask it a question and get a cited answer
+kb ask "why is a cross-encoder too slow to run over the whole corpus?"
 ```
 
 `kb search` prints the fused ranking with the full score breakdown, so you can
@@ -54,6 +57,61 @@ see *why* each chunk is there:
    dense=0.6902@4 fused=0.0161
    nDCG rewards putting the most relevant chunk first, not merely…
 ```
+
+## Answering
+
+```console
+$ kb ask "why is a cross-encoder too slow to run over the whole corpus?"
+
+A cross-encoder reranker scores each query-document pair jointly, which is far
+more accurate than comparing independent embeddings, but too slow to run over a
+whole corpus. [1]
+
+[1]  Retrieval Augmented Generation — Reranking
+     docs/rag.md#L9-L11
+
+extractive (extractive-v1) · 3 chunks, ~150 tokens · 4.7ms
+```
+
+Every `[n]` resolves to a source position with a working deep link. Three
+properties make that claim mean something:
+
+**Hallucinated markers never render.** The model's output is untrusted: markers
+are validated against the sources actually supplied, and an invented `[9]` is
+stripped from the text rather than shown as a dead chip. A citation that leads
+nowhere is worse than no citation, because it looks like evidence.
+
+**Citations attach to the right sentence.** Citations are written *after* the
+claim they support — `…defaults to 60. [1]` — so a naive sentence split
+attributes the marker to the *next* sentence. Since verification runs per
+sentence, that misattribution would make every verdict meaningless, so the
+splitter reattaches trailing markers to the claim they follow.
+
+**Off-corpus questions are refused, not answered.** Ask about the capital of
+France against a retrieval corpus and you get "the sources do not contain an
+answer" — not a confident, fully-cited answer stitched from whatever ranked
+highest. That is the single most damaging thing a grounded system can do.
+
+### Providers
+
+| `KB_GENERATION_PROVIDER` | What it does | Needs |
+|---|---|---|
+| `extractive` *(default)* | Selects the sentences from retrieved chunks that answer the question, cites each to its chunk | nothing |
+| `anthropic` / `openai` | Writes prose from the numbered sources, with streaming | an API key |
+
+The extractive generator is the default for a reason beyond convenience: every
+sentence is **verbatim from a source**, so it is trivially faithful — there is no
+mechanism by which it can hallucinate. That makes it a safe fallback (a provider
+outage degrades to it without risking an unsupported claim), a deterministic
+fixture for citation-verification tests, and a genuine floor for the evaluation
+harness to measure an LLM *against*.
+
+Sentence selection is MMR — relevance minus redundancy — because without the
+redundancy term an extractive answer becomes the same fact restated from four
+overlapping chunks.
+
+Streaming is available over SSE at `POST /api/ask/stream`; citations arrive with
+the terminal `done` event, since a marker can be half-emitted mid-stream.
 
 ## Reranking
 
@@ -100,6 +158,8 @@ kb serve            # http://localhost:8000, docs at /docs
 |---|---|
 | `POST /api/ingest` | Ingest a source path/URL, or paste text directly |
 | `POST /api/ingest/upload` | Upload a file |
+| `POST /api/ask` | Answer a question with validated citations |
+| `POST /api/ask/stream` | The same, streamed as Server-Sent Events |
 | `POST /api/search` | Hybrid retrieval with full score provenance |
 | `GET /api/documents` | Browse the corpus |
 | `GET /api/documents/{id}/chunks` | Inspect how a document was chunked |
@@ -159,6 +219,9 @@ KB_USE_MMR=true                   # diversify the final set
 
 KB_RERANK_PROVIDER=cross_encoder  # lexical (default, offline) | cross_encoder | cohere | voyage | llm
 KB_RERANK_TOP_N=30                # candidates handed to the reranker
+
+KB_GENERATION_PROVIDER=anthropic  # extractive (default, offline) | anthropic | openai
+KB_CONTEXT_TOKEN_BUDGET=6000      # tokens of retrieved context in the prompt
 ```
 
 ## Development
