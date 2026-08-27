@@ -68,6 +68,10 @@ jobs:
       - name: Check the README diagrams parse
         run: python scripts/check_mermaid.py
 
+      # A dead link fails nothing and is read by everyone, so it is gated too.
+      - name: Check the documentation links resolve
+        run: python scripts/check_links.py
+
   frontend:
     name: frontend
     runs-on: ubuntu-latest

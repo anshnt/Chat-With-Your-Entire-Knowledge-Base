@@ -2,7 +2,7 @@
 PY := .venv/bin/python
 PIP := .venv/bin/pip
 
-.PHONY: help venv install install-ui test test-cov lint fmt typecheck check diagrams serve ui clean demo eval map
+.PHONY: help venv install install-ui test test-cov lint fmt typecheck check diagrams links docs serve ui clean demo eval map
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -33,7 +33,12 @@ typecheck: ## Type-check with mypy
 diagrams: ## Check the README's mermaid diagrams parse
 	$(PY) scripts/check_mermaid.py
 
-check: lint typecheck diagrams test ## Lint, type-check, check diagrams, and test
+links: ## Check the documentation's internal links resolve
+	$(PY) scripts/check_links.py
+
+docs: diagrams links ## Run every documentation check
+
+check: lint typecheck docs test ## Lint, type-check, check the docs, and test
 
 serve: ## Run the API with auto-reload
 	.venv/bin/kb serve --reload

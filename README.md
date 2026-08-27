@@ -3,7 +3,7 @@
 [![CI](https://github.com/anshnt/Chat-With-Your-Entire-Knowledge-Base/actions/workflows/ci.yml/badge.svg)](https://github.com/anshnt/Chat-With-Your-Entire-Knowledge-Base/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-773%20offline-brightgreen)](tests)
+[![Tests](https://img.shields.io/badge/tests-offline%2C%20no%20keys-brightgreen)](tests)
 [![No API keys required](https://img.shields.io/badge/API%20keys-not%20required-informational)](#configuration)
 
 Ask questions across PDFs, Markdown, Notion exports, websites, GitHub repos and
@@ -25,8 +25,15 @@ are the ones a demo skips:
 
 **It runs with no API keys.** The default embedder and generator are
 deterministic local implementations, so `git clone && pytest` works offline and
-CI needs no secrets. Point the config at Voyage/OpenAI/Anthropic when you want
-real semantics — nothing else changes.
+CI needs no secrets (800+ tests, no network). Point the config at
+Voyage/OpenAI/Anthropic when you want real semantics — nothing else changes.
+
+**Contents** · [Quickstart](#quickstart) ·
+[Citations](#how-citations-jump-to-the-source) · [Answering](#answering) ·
+[Reranking](#reranking) · [Verification](#citation-verification) ·
+[Evaluation](#retrieval-evaluation) · [Corpus map](#corpus-visualization) ·
+[Web UI](#web-interface) · [Architecture](#architecture) ·
+[API](#http-api) · [Config](#configuration)
 
 ---
 
@@ -69,6 +76,59 @@ see *why* each chunk is there:
    dense=0.6902@4 fused=0.0161
    nDCG rewards putting the most relevant chunk first, not merely…
 ```
+
+## How citations jump to the source
+
+Every chunk stores a typed `Locator`, and each variant knows how to address
+itself:
+
+| Source | Locator | Deep link |
+|---|---|---|
+| PDF | page (+ char span) | `report.pdf#page=12` |
+| Markdown / text | line range + heading path | `notes.md#L88-L104` |
+| Website | URL + quote | `example.com/page#:~:text=RRF%20consumes,not%20scores` |
+| GitHub | repo, ref, path, lines | `github.com/o/r/blob/main/f.py#L10-L20` |
+| YouTube | video id + start time | `youtube.com/watch?v=ID&t=93s` |
+| Notion export | page path + line range | page URL |
+
+```mermaid
+flowchart TB
+    CHUNKER["Chunker<br/><i>knows nothing about pages,<br/>timestamps or line numbers</i>"]
+    CHUNKER --> DRAFT["ChunkDraft<br/><i>text + line/char range</i>"]
+    DRAFT --> CB["Segment.build_locator( )"]
+
+    CB --> PDF["PdfLocator<br/>page 12"]
+    CB --> TXT["TextLocator<br/>lines 88-104"]
+    CB --> WEB["WebLocator<br/>quote"]
+    CB --> GH["GitHubLocator<br/>path + lines"]
+    CB --> YT["YouTubeLocator<br/>93s"]
+    CB --> NOT["NotionLocator<br/>page id"]
+
+    PDF --> L1["report.pdf#page=12"]
+    TXT --> L2["notes.md#L88-L104"]
+    WEB --> L3["page#:~:text=RRF,scores"]
+    GH --> L4["blob/main/f.py#L10-L20"]
+    YT --> L5["watch?v=ID#38;t=93s"]
+    NOT --> L6["notion.so/PAGE_ID"]
+```
+
+Adding a source type means adding a `Locator` variant and a connector. Nothing
+in chunking, retrieval or generation changes — they never learn what a page is,
+because they only ever call `locator.deep_link()`.
+
+Each connector does the work that source type actually needs, rather than calling
+`.get_text()` and hoping:
+
+| Source | The part that is not just parsing |
+|---|---|
+| **PDF** | One segment per page, so a chunk never straddles a page boundary. De-hyphenation (`retriev-\nal` → `retrieval`, or neither BM25 nor the embedder ever matches the word), and header/footer removal by frequency across pages rather than by position |
+| **Website** | Content selected by **text density** — the ratio of text to markup, since navigation is link-dense and text-sparse. Converted to Markdown, not plain text, so the heading structure survives into citation labels. `robots.txt` respected |
+| **GitHub** | Code chunked at **top-level declarations**, with the enclosing symbol on the locator: `fusion.py:88 (reciprocal_rank_fusion)`. Lock files, `node_modules` and minified bundles excluded |
+| **YouTube** | Grouped into **time windows**, because auto-captions have no punctuation for a text chunker to split on. Overlap measured in seconds, so the repeated span is real speech |
+| **Notion** | The 32-hex page id split out of the filename (kept, so citations link to `notion.so`), directory nesting reconstructed into `Engineering › Runbooks › On-call`, and CSV databases turned into `key: value` blocks — a raw row loses its field names and embeds terribly |
+
+See [`docs/connectors.md`](docs/connectors.md). `kb connectors` lists what your
+install can ingest.
 
 ## Answering
 
@@ -125,72 +185,40 @@ overlapping chunks.
 Streaming is available over SSE at `POST /api/ask/stream`; citations arrive with
 the terminal `done` event, since a marker can be half-emitted mid-stream.
 
-## Retrieval evaluation
+## Reranking
 
-```bash
-kb eval generate -o eval/golden.yaml       # bootstrap a golden set from the corpus
-kb eval run eval/golden.yaml --sweep full  # compare configurations
+Fusion maximises recall over 50 candidates; the answer only ever sees 8. The
+reranking stage is what turns the former into the latter, and it is the highest-
+leverage single addition to a naive pipeline — a cross-encoder reads the query
+and the passage *together*, so it can judge relevance in ways that comparing two
+independently-computed embeddings structurally cannot.
+
+Four providers behind one interface:
+
+| `KB_RERANK_PROVIDER` | What it is | Needs |
+|---|---|---|
+| `lexical` *(default)* | Offline query-passage features: IDF-weighted coverage, proximity, exact phrase, first-match position, heading match | nothing |
+| `cross_encoder` | Local `ms-marco-MiniLM` cross-encoder, ~90 MB, CPU-friendly | `pip install 'kb-chat[local]'` |
+| `cohere` / `voyage` | Hosted rerank APIs | an API key |
+| `llm` | Listwise: the model sees all candidates and orders them, so it can make *comparative* judgements | an API key |
+
+A reranker that fails, times out, or returns a malformed ordering degrades to the
+fused order rather than failing the query — the candidates were already relevant,
+just less well sorted. A missing optional dependency or API key falls back to the
+offline reranker with a warning.
+
+The second-order benefit is score quality. RRF scores are compressed by
+construction (rank 1 vs rank 2 differ by ~1.6%), which makes a `min_score`
+threshold useless. Rerank scores separate:
+
+```
+fusion only:   0.0164  0.0161  0.0159    ← which of these is actually right?
++ reranking:   1.7448  0.8685  0.6778    ← the first one
 ```
 
-Same questions, same corpus, one variable changed. Measured against **this
-repository's own documentation** with the default offline embedder:
-
-![Retrieval quality on paraphrased questions](docs/assets/eval-paraphrase-metrics.svg)
-
-| configuration | hit_rate@5 | recall@5 | ndcg@5 | mrr | mean ms |
-|---|---|---|---|---|---|
-| lexical (BM25) | 0.778 | 0.722 | 0.652 | **0.659** | 2.4 |
-| dense | 0.500 | 0.444 | 0.292 | 0.291 | 3.1 |
-| **hybrid** | **0.833** | **0.778** | **0.659** | 0.651 | 7.3 |
-| hybrid + rerank | 0.778 | 0.778 | 0.636 | 0.588 | 15.4 |
-
-The histogram of *where* the first relevant chunk landed is the most diagnostic
-single artefact — a tail at ranks 8-10 blames the reranker, a spike in the
-rightmost bar blames retrieval:
-
-![Rank of the first relevant chunk](docs/assets/eval-paraphrase-ranks.svg)
-
-### The interesting part is where the numbers disagree with the pitch
-
-Those figures come from a **hand-written** golden set whose questions are
-deliberately worded *differently* from the passages that answer them. Run the
-same sweep against a set **generated from the corpus** and the ranking inverts:
-
-![Retrieval quality on generated questions](docs/assets/eval-generated-metrics.svg)
-
-| configuration | generated: hit_rate@5 | generated: ndcg@5 | paraphrase: hit_rate@5 | paraphrase: ndcg@5 |
-|---|---|---|---|---|
-| lexical | **1.000** | 0.844 | 0.778 | 0.652 |
-| dense | 0.600 | 0.485 | 0.500 | 0.292 |
-| hybrid | 0.867 | 0.726 | **0.833** | **0.659** |
-| hybrid + rerank | 0.933 | **0.818** | 0.778 | 0.636 |
-
-Three conclusions, none of them flattering by default:
-
-1. **A synthetic golden set measures vocabulary, not quality.** Questions derived
-   from a corpus inherit its wording, so BM25 scores a perfect 1.000 hit rate and
-   hybrid *loses* to it. Any project reporting only synthetic numbers is reporting
-   how well its retriever matches strings it was handed.
-2. **Hybrid earns its keep on recall, not on ranking.** On paraphrased questions
-   it gains 0.055 hit rate and 0.056 recall over BM25 while nDCG barely moves.
-   That is the expected shape: fusion surfaces chunks BM25 never returns, and
-   ordering them is the reranker's job.
-3. **The offline reranker helps on one set and hurts on the other**, +0.092 nDCG
-   vs −0.023, for a legible reason: it scores term coverage, proximity and exact
-   phrase — exactly the signals a paraphrased question *lacks*. That measurement
-   is the argument for `KB_RERANK_PROVIDER=cross_encoder` in real use, and it is
-   not knowable without measuring.
-
-Full write-up, metric definitions, and the four decisions that keep the numbers
-honest (excluded-not-zeroed queries, capped recall denominators, achievable nDCG
-ceilings): [`docs/evaluation.md`](docs/evaluation.md).
-
-```bash
-kb eval run eval/golden-paraphrase.yaml --metric ndcg@5 --fail-under 0.55
-```
-
-Exits non-zero below the threshold, so a retrieval regression fails the build
-instead of being discovered in production.
+`kb eval` (see [`docs/evaluation.md`](docs/evaluation.md)) is how you decide
+whether a hosted reranker earns its latency on *your* corpus, rather than taking
+a benchmark's word for it.
 
 ## Citation verification
 
@@ -281,208 +309,72 @@ lexical overlap. Both push the score *down*, so the failure mode is a false
 `KB_VERIFY_PROVIDER=llm` for a strict entailment judge that is required to quote
 its evidence and defaults to "no" when unsure.
 
-## Reranking
-
-Fusion maximises recall over 50 candidates; the answer only ever sees 8. The
-reranking stage is what turns the former into the latter, and it is the highest-
-leverage single addition to a naive pipeline — a cross-encoder reads the query
-and the passage *together*, so it can judge relevance in ways that comparing two
-independently-computed embeddings structurally cannot.
-
-Four providers behind one interface:
-
-| `KB_RERANK_PROVIDER` | What it is | Needs |
-|---|---|---|
-| `lexical` *(default)* | Offline query-passage features: IDF-weighted coverage, proximity, exact phrase, first-match position, heading match | nothing |
-| `cross_encoder` | Local `ms-marco-MiniLM` cross-encoder, ~90 MB, CPU-friendly | `pip install 'kb-chat[local]'` |
-| `cohere` / `voyage` | Hosted rerank APIs | an API key |
-| `llm` | Listwise: the model sees all candidates and orders them, so it can make *comparative* judgements | an API key |
-
-A reranker that fails, times out, or returns a malformed ordering degrades to the
-fused order rather than failing the query — the candidates were already relevant,
-just less well sorted. A missing optional dependency or API key falls back to the
-offline reranker with a warning.
-
-The second-order benefit is score quality. RRF scores are compressed by
-construction (rank 1 vs rank 2 differ by ~1.6%), which makes a `min_score`
-threshold useless. Rerank scores separate:
-
-```
-fusion only:   0.0164  0.0161  0.0159    ← which of these is actually right?
-+ reranking:   1.7448  0.8685  0.6778    ← the first one
-```
-
-`kb eval` (see [`docs/evaluation.md`](docs/evaluation.md)) is how you decide
-whether a hosted reranker earns its latency on *your* corpus, rather than taking
-a benchmark's word for it.
-
-## Web interface
+## Retrieval evaluation
 
 ```bash
-kb serve                              # the API on :8000
-cd frontend && npm install && npm run dev   # the UI on :5173
+kb eval generate -o eval/golden.yaml       # bootstrap a golden set from the corpus
+kb eval run eval/golden.yaml --sweep full  # compare configurations
 ```
 
-Three panes: retrieval controls and ingestion on the left, the conversation in
-the middle, and **the source** on the right. That last one is the point — a
-citation has to land somewhere, and if checking a claim means leaving the page,
-most readers will not.
+Same questions, same corpus, one variable changed. Measured against **this
+repository's own documentation** with the default offline embedder:
 
-| | |
-|---|---|
-| ![The corpus map](docs/assets/screenshot-map.png) | ![Dark mode](docs/assets/screenshot-dark.png) |
+![Retrieval quality on paraphrased questions](docs/assets/eval-paraphrase-metrics.svg)
 
-Four decisions worth naming:
+| configuration | hit_rate@5 | recall@5 | ndcg@5 | mrr | mean ms |
+|---|---|---|---|---|---|
+| lexical (BM25) | 0.778 | 0.722 | 0.652 | **0.659** | 2.4 |
+| dense | 0.500 | 0.444 | 0.292 | 0.291 | 3.1 |
+| **hybrid** | **0.833** | **0.778** | **0.659** | 0.651 | 7.3 |
+| hybrid + rerank | 0.778 | 0.778 | 0.636 | 0.588 | 15.4 |
 
-**Verdicts render on the sentence, not in a panel.** A list of "3 unsupported
-claims" under an answer is something a reader skips. A wavy underline under the
-actual clause is not. And `supported` sentences get **no** decoration —
-highlighting the normal case draws the eye away from the exceptions, which are
-the only reason the feature exists. Colour is never the only signal: each verdict
-has a distinct underline style and a word, so it survives colour blindness and
-greyscale.
+The histogram of *where* the first relevant chunk landed is the most diagnostic
+single artefact — a tail at ranks 8-10 blames the reranker, a spike in the
+rightmost bar blames retrieval:
 
-**A citation marker is a real `<button>`.** Markers are the primary navigation
-here, so they are keyboard-reachable and their labels say where they go
-("Citation 2: Architecture — Retrieval › Fusion") rather than reading out "[2]".
-The answer is rendered as React elements, never `dangerouslySetInnerHTML` —
-routing model output through an HTML sink would be the obvious way to put an XSS
-hole in an otherwise safe app.
+![Rank of the first relevant chunk](docs/assets/eval-paraphrase-ranks.svg)
 
-**A link that would not resolve is not rendered as a link.** A `TextLocator` for
-a local Markdown file produces `docs/architecture.md#L154`, which is a fine
-address for an editor and a dead link in a browser. Showing it anyway is exactly
-the failure this project criticises elsewhere, so the UI checks first and shows
-the passage instead.
+### The interesting part is where the numbers disagree with the pitch
 
-**The retrieval knobs are in the UI on purpose.** Asking the same question under
-`hybrid`, `lexical` and `dense`, with the per-stage scores visible, is how you
-develop an intuition for what fusion is actually doing — and how you tell a
-generation problem from a retrieval one.
+Those figures come from a **hand-written** golden set whose questions are
+deliberately worded *differently* from the passages that answer them. Run the
+same sweep against a set **generated from the corpus** and the ranking inverts:
 
-No charting or Markdown dependency: the corpus map is ~200 lines of hand-drawn
-SVG, and answer text goes through a ~60-line inline-Markdown tokeniser, because
-the extractive generator quotes source sentences verbatim and a sentence lifted
-from a Markdown file arrives with its `**bold**` intact.
+![Retrieval quality on generated questions](docs/assets/eval-generated-metrics.svg)
 
-## HTTP API
+| configuration | generated: hit_rate@5 | generated: ndcg@5 | paraphrase: hit_rate@5 | paraphrase: ndcg@5 |
+|---|---|---|---|---|
+| lexical | **1.000** | 0.844 | 0.778 | 0.652 |
+| dense | 0.600 | 0.485 | 0.500 | 0.292 |
+| hybrid | 0.867 | 0.726 | **0.833** | **0.659** |
+| hybrid + rerank | 0.933 | **0.818** | 0.778 | 0.636 |
+
+Three conclusions, none of them flattering by default:
+
+1. **A synthetic golden set measures vocabulary, not quality.** Questions derived
+   from a corpus inherit its wording, so BM25 scores a perfect 1.000 hit rate and
+   hybrid *loses* to it. Any project reporting only synthetic numbers is reporting
+   how well its retriever matches strings it was handed.
+2. **Hybrid earns its keep on recall, not on ranking.** On paraphrased questions
+   it gains 0.055 hit rate and 0.056 recall over BM25 while nDCG barely moves.
+   That is the expected shape: fusion surfaces chunks BM25 never returns, and
+   ordering them is the reranker's job.
+3. **The offline reranker helps on one set and hurts on the other**, +0.092 nDCG
+   vs −0.023, for a legible reason: it scores term coverage, proximity and exact
+   phrase — exactly the signals a paraphrased question *lacks*. That measurement
+   is the argument for `KB_RERANK_PROVIDER=cross_encoder` in real use, and it is
+   not knowable without measuring.
+
+Full write-up, metric definitions, and the four decisions that keep the numbers
+honest (excluded-not-zeroed queries, capped recall denominators, achievable nDCG
+ceilings): [`docs/evaluation.md`](docs/evaluation.md).
 
 ```bash
-kb serve            # http://localhost:8000, docs at /docs
+kb eval run eval/golden-paraphrase.yaml --metric ndcg@5 --fail-under 0.55
 ```
 
-| Endpoint | Purpose |
-|---|---|
-| `POST /api/ingest` | Ingest a source path/URL, or paste text directly |
-| `POST /api/ingest/upload` | Upload a file |
-| `POST /api/ask` | Answer a question with validated citations |
-| `POST /api/ask/stream` | The same, streamed as Server-Sent Events |
-| `POST /api/search` | Hybrid retrieval with full score provenance |
-| `GET /api/documents` | Browse the corpus |
-| `GET /api/documents/{id}/chunks` | Inspect how a document was chunked |
-| `GET /api/chunks/{id}/context` | Neighbouring chunks, for the source viewer |
-| `GET /api/collections/{name}/stats` | Corpus statistics |
-| `GET /api/collections/{name}/heatmap` | Which chunks actually get retrieved |
-| `GET /api/collections/{name}/queries` | Recently issued queries, for mining eval questions |
-
-## How citations jump to the source
-
-Every chunk stores a typed `Locator`, and each variant knows how to address
-itself:
-
-| Source | Locator | Deep link |
-|---|---|---|
-| PDF | page (+ char span) | `report.pdf#page=12` |
-| Markdown / text | line range + heading path | `notes.md#L88-L104` |
-| Website | URL + quote | `example.com/page#:~:text=RRF%20consumes,not%20scores` |
-| GitHub | repo, ref, path, lines | `github.com/o/r/blob/main/f.py#L10-L20` |
-| YouTube | video id + start time | `youtube.com/watch?v=ID&t=93s` |
-| Notion export | page path + line range | page URL |
-
-```mermaid
-flowchart TB
-    CHUNKER["Chunker<br/><i>knows nothing about pages,<br/>timestamps or line numbers</i>"]
-    CHUNKER --> DRAFT["ChunkDraft<br/><i>text + line/char range</i>"]
-    DRAFT --> CB["Segment.build_locator( )"]
-
-    CB --> PDF["PdfLocator<br/>page 12"]
-    CB --> TXT["TextLocator<br/>lines 88-104"]
-    CB --> WEB["WebLocator<br/>quote"]
-    CB --> GH["GitHubLocator<br/>path + lines"]
-    CB --> YT["YouTubeLocator<br/>93s"]
-    CB --> NOT["NotionLocator<br/>page id"]
-
-    PDF --> L1["report.pdf#page=12"]
-    TXT --> L2["notes.md#L88-L104"]
-    WEB --> L3["page#:~:text=RRF,scores"]
-    GH --> L4["blob/main/f.py#L10-L20"]
-    YT --> L5["watch?v=ID#38;t=93s"]
-    NOT --> L6["notion.so/PAGE_ID"]
-```
-
-Adding a source type means adding a `Locator` variant and a connector. Nothing
-in chunking, retrieval or generation changes — they never learn what a page is,
-because they only ever call `locator.deep_link()`.
-
-Each connector does the work that source type actually needs, rather than calling
-`.get_text()` and hoping:
-
-| Source | The part that is not just parsing |
-|---|---|
-| **PDF** | One segment per page, so a chunk never straddles a page boundary. De-hyphenation (`retriev-\nal` → `retrieval`, or neither BM25 nor the embedder ever matches the word), and header/footer removal by frequency across pages rather than by position |
-| **Website** | Content selected by **text density** — the ratio of text to markup, since navigation is link-dense and text-sparse. Converted to Markdown, not plain text, so the heading structure survives into citation labels. `robots.txt` respected |
-| **GitHub** | Code chunked at **top-level declarations**, with the enclosing symbol on the locator: `fusion.py:88 (reciprocal_rank_fusion)`. Lock files, `node_modules` and minified bundles excluded |
-| **YouTube** | Grouped into **time windows**, because auto-captions have no punctuation for a text chunker to split on. Overlap measured in seconds, so the repeated span is real speech |
-| **Notion** | The 32-hex page id split out of the filename (kept, so citations link to `notion.so`), directory nesting reconstructed into `Engineering › Runbooks › On-call`, and CSV databases turned into `key: value` blocks — a raw row loses its field names and embeds terribly |
-
-See [`docs/connectors.md`](docs/connectors.md). `kb connectors` lists what your
-install can ingest.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    subgraph ingest["Ingestion"]
-        direction TB
-        SRC["PDF · Markdown · Notion<br/>Website · GitHub · YouTube"]
-        CONN["Connectors<br/><i>one segment per addressable unit</i>"]
-        CHUNK["Chunkers<br/><i>heading-aware · code-aware</i>"]
-        SRC --> CONN --> CHUNK
-    end
-
-    subgraph store["One SQLite file"]
-        direction TB
-        FTS[("FTS5 index<br/>BM25")]
-        VEC[("float32 vectors<br/>+ norms")]
-    end
-
-    CHUNK -->|"chunks + locators"| FTS
-    CHUNK --> VEC
-
-    Q(["query"]) --> BM25["BM25<br/><i>candidate_k = 50</i>"]
-    Q --> DENSE["dense cosine<br/><i>candidate_k = 50</i>"]
-    FTS -.-> BM25
-    VEC -.-> DENSE
-
-    BM25 --> FUSE{{"fuse<br/>RRF"}}
-    DENSE --> FUSE
-    FUSE --> RR["rerank<br/><i>cross-encoder</i>"]
-    RR --> MMR["MMR<br/><i>diversify</i>"]
-    MMR --> TOPK["top-k = 8"]
-    TOPK --> ANS["answer<br/>+ citations"]
-    ANS --> VERIFY["citation<br/>verification"]
-    TOPK -.->|"same code path"| EVAL["evaluation<br/><i>nDCG · recall · MRR</i>"]
-```
-
-Two candidate lists of 50 are fused and **only then** cut to 8 — the chunk BM25
-ranks 40th and the vectors rank 35th is often the right answer, and it is
-invisible to either retriever alone at k=8.
-
-One SQLite file holds documents, chunks, the BM25 index and the vectors, so the
-lexical and dense views of the corpus can never drift apart. The evaluation
-harness runs through the *same* pipeline that serves a live query, which is the
-only way a retrieval benchmark means anything. See
-[`docs/architecture.md`](docs/architecture.md).
+Exits non-zero below the threshold, so a retrieval regression fails the build
+instead of being discovered in production.
 
 ## Corpus visualization
 
@@ -535,6 +427,121 @@ is actionable.
 | `GET /api/collections/{c}/graph` | Which documents overlap? |
 | `GET /api/collections/{c}/coverage` | How much of the corpus does any work — and which chunks never do? |
 
+## Web interface
+
+```bash
+kb serve                              # the API on :8000
+cd frontend && npm install && npm run dev   # the UI on :5173
+```
+
+Three panes: retrieval controls and ingestion on the left, the conversation in
+the middle, and **the source** on the right. That last one is the point — a
+citation has to land somewhere, and if checking a claim means leaving the page,
+most readers will not.
+
+| | |
+|---|---|
+| ![The corpus map](docs/assets/screenshot-map.png) | ![Dark mode](docs/assets/screenshot-dark.png) |
+
+Four decisions worth naming:
+
+**Verdicts render on the sentence, not in a panel.** A list of "3 unsupported
+claims" under an answer is something a reader skips. A wavy underline under the
+actual clause is not. And `supported` sentences get **no** decoration —
+highlighting the normal case draws the eye away from the exceptions, which are
+the only reason the feature exists. Colour is never the only signal: each verdict
+has a distinct underline style and a word, so it survives colour blindness and
+greyscale.
+
+**A citation marker is a real `<button>`.** Markers are the primary navigation
+here, so they are keyboard-reachable and their labels say where they go
+("Citation 2: Architecture — Retrieval › Fusion") rather than reading out "[2]".
+The answer is rendered as React elements, never `dangerouslySetInnerHTML` —
+routing model output through an HTML sink would be the obvious way to put an XSS
+hole in an otherwise safe app.
+
+**A link that would not resolve is not rendered as a link.** A `TextLocator` for
+a local Markdown file produces `docs/architecture.md#L154`, which is a fine
+address for an editor and a dead link in a browser. Showing it anyway is exactly
+the failure this project criticises elsewhere, so the UI checks first and shows
+the passage instead.
+
+**The retrieval knobs are in the UI on purpose.** Asking the same question under
+`hybrid`, `lexical` and `dense`, with the per-stage scores visible, is how you
+develop an intuition for what fusion is actually doing — and how you tell a
+generation problem from a retrieval one.
+
+No charting or Markdown dependency: the corpus map is ~200 lines of hand-drawn
+SVG, and answer text goes through a ~60-line inline-Markdown tokeniser, because
+the extractive generator quotes source sentences verbatim and a sentence lifted
+from a Markdown file arrives with its `**bold**` intact.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph ingest["Ingestion"]
+        direction TB
+        SRC["PDF · Markdown · Notion<br/>Website · GitHub · YouTube"]
+        CONN["Connectors<br/><i>one segment per addressable unit</i>"]
+        CHUNK["Chunkers<br/><i>heading-aware · code-aware</i>"]
+        SRC --> CONN --> CHUNK
+    end
+
+    subgraph store["One SQLite file"]
+        direction TB
+        FTS[("FTS5 index<br/>BM25")]
+        VEC[("float32 vectors<br/>+ norms")]
+    end
+
+    CHUNK -->|"chunks + locators"| FTS
+    CHUNK --> VEC
+
+    Q(["query"]) --> BM25["BM25<br/><i>candidate_k = 50</i>"]
+    Q --> DENSE["dense cosine<br/><i>candidate_k = 50</i>"]
+    FTS -.-> BM25
+    VEC -.-> DENSE
+
+    BM25 --> FUSE{{"fuse<br/>RRF"}}
+    DENSE --> FUSE
+    FUSE --> RR["rerank<br/><i>cross-encoder</i>"]
+    RR --> MMR["MMR<br/><i>diversify</i>"]
+    MMR --> TOPK["top-k = 8"]
+    TOPK --> ANS["answer<br/>+ citations"]
+    ANS --> VERIFY["citation<br/>verification"]
+    TOPK -.->|"same code path"| EVAL["evaluation<br/><i>nDCG · recall · MRR</i>"]
+```
+
+Two candidate lists of 50 are fused and **only then** cut to 8 — the chunk BM25
+ranks 40th and the vectors rank 35th is often the right answer, and it is
+invisible to either retriever alone at k=8.
+
+One SQLite file holds documents, chunks, the BM25 index and the vectors, so the
+lexical and dense views of the corpus can never drift apart. The evaluation
+harness runs through the *same* pipeline that serves a live query, which is the
+only way a retrieval benchmark means anything. See
+[`docs/architecture.md`](docs/architecture.md).
+
+## HTTP API
+
+```bash
+kb serve            # http://localhost:8000, docs at /docs
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/ingest` | Ingest a source path/URL, or paste text directly |
+| `POST /api/ingest/upload` | Upload a file |
+| `POST /api/ask` | Answer a question with validated citations |
+| `POST /api/ask/stream` | The same, streamed as Server-Sent Events |
+| `POST /api/search` | Hybrid retrieval with full score provenance |
+| `GET /api/documents` | Browse the corpus |
+| `GET /api/documents/{id}/chunks` | Inspect how a document was chunked |
+| `GET /api/chunks/{id}/context` | Neighbouring chunks, for the source viewer |
+| `GET /api/collections/{name}/stats` | Corpus statistics |
+| `GET /api/collections/{name}/heatmap` | Which chunks actually get retrieved |
+| `GET /api/collections/{name}/queries` | Recently issued queries, for mining eval questions |
+
 ## Configuration
 
 Every setting is an environment variable with the `KB_` prefix (see
@@ -561,11 +568,24 @@ KB_VERIFICATION_THRESHOLD=0.5     # support score below which a claim is unsuppo
 ## Development
 
 ```bash
-make test        # pytest, offline, no keys required — 584 tests
-make lint        # ruff + mypy
-make check       # both
+make install     # backend, with dev extras
+make install-ui  # frontend dependencies
+
+make test        # pytest — 800+ tests, offline, no keys, no network
+make lint        # ruff
+make typecheck   # mypy
+make diagrams    # check the README's mermaid blocks parse
+make links       # check the documentation's internal links resolve
+make check       # all of the above
+
+make serve       # the API, with reload
+make ui          # the frontend dev server
 make eval        # ingest this repo's docs and run the paraphrase sweep
+make map         # regenerate docs/assets/corpus-map.svg
 ```
+
+The frontend has its own checks (`cd frontend && npm run typecheck lint build`),
+and every one of these runs in CI across Python 3.10, 3.11 and 3.12.
 
 ## License
 
