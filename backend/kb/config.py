@@ -43,6 +43,16 @@ class RerankProvider(str, Enum):
     """Listwise reranking by an LLM."""
 
 
+class VerifyProvider(str, Enum):
+    NONE = "none"
+    LEXICAL = "lexical"
+    """Offline entailment approximation: coverage, alignment, number/entity and
+    negation agreement. No keys, deterministic."""
+
+    LLM = "llm"
+    """A language model acting as a strict entailment judge."""
+
+
 class GenerationProvider(str, Enum):
     EXTRACTIVE = "extractive"
     """Offline generator: selects and stitches the most query-relevant sentences
@@ -119,6 +129,8 @@ class Settings(BaseSettings):
 
     # ---------------- verification ----------------
     verify_citations: bool = True
+    verify_provider: VerifyProvider = VerifyProvider.LEXICAL
+    verify_model: str = ""
     verification_threshold: float = Field(
         default=0.5, ge=0.0, le=1.0, description="Support score below which a claim is unsupported"
     )

@@ -32,6 +32,7 @@ from kb.models import (
 )
 from kb.retrieval.hybrid import HybridRetriever, Reranker, request_from_settings
 from kb.store import SQLiteStore
+from kb.verify import Verifier, build_verifier
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ class KnowledgeBase:
         registry: ConnectorRegistry | None = None,
         reranker: Reranker | None = None,
         generator: Generator | None = None,
+        verifier: Verifier | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.settings.ensure_dirs()
@@ -56,6 +58,7 @@ class KnowledgeBase:
         self.registry = registry or default_registry(self.settings)
         self.reranker = reranker if reranker is not None else self._build_reranker()
         self.generator = generator or build_generator(self.settings)
+        self.verifier = verifier if verifier is not None else build_verifier(self.settings)
         self.pipeline = IngestionPipeline(
             self.store, self.embedder, self.settings, registry=self.registry
         )
@@ -137,8 +140,8 @@ class KnowledgeBase:
     # answering
     # ------------------------------------------------------------------ #
 
-    def ask(self, query: str, **overrides: Any) -> Answer:
-        """Retrieve, then answer with citations resolved to source positions.
+    def ask(self, query: str, *, verify: bool | None = None, **overrides: Any) -> Answer:
+        """Retrieve, answer, and verify the citations.
 
         Retrieval overrides are passed straight through, so an answer can be
         produced under any retrieval configuration — which is what lets the
@@ -148,9 +151,21 @@ class KnowledgeBase:
         result = self.search(query, **overrides)
         answer = self.generator.generate(query, result.results, retrieval=result)
         answer.timings_ms.update({f"retrieval_{k}": v for k, v in result.timings_ms.items()})
-        return answer
+        return self.verify_answer(answer, enabled=verify)
 
-    def ask_stream(self, query: str, **overrides: Any) -> Iterator[tuple[str, Answer | None]]:
+    def verify_answer(self, answer: Answer, *, enabled: bool | None = None) -> Answer:
+        """Annotate an answer's sentences with support verdicts.
+
+        Exposed separately from :meth:`ask` so a stored answer can be re-verified
+        later — under a stricter verifier, or after the corpus changes.
+        """
+        if enabled is False or self.verifier is None:
+            return answer
+        return self.verifier.verify(answer)
+
+    def ask_stream(
+        self, query: str, *, verify: bool | None = None, **overrides: Any
+    ) -> Iterator[tuple[str, Answer | None]]:
         """Stream an answer: ``(delta, None)`` while generating, then ``("", answer)``.
 
         Citations are only resolvable once the text is complete — a marker may be
@@ -163,7 +178,11 @@ class KnowledgeBase:
                 answer.timings_ms.update(
                     {f"retrieval_{k}": v for k, v in result.timings_ms.items()}
                 )
-            yield delta, answer
+                # Verification needs the whole answer, so it runs once the text
+                # is complete — which is also when citations become resolvable.
+                yield delta, self.verify_answer(answer, enabled=verify)
+            else:
+                yield delta, answer
 
     # ------------------------------------------------------------------ #
     # corpus inspection
@@ -221,7 +240,8 @@ class KnowledgeBase:
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return (
             f"KnowledgeBase(db={self.settings.db_path}, embedder={self.embedder.model!r}, "
-            f"strategy={self.settings.retrieval_strategy.value})"
+            f"strategy={self.settings.retrieval_strategy.value}, "
+            f"generator={self.generator.name!r})"
         )
 
 

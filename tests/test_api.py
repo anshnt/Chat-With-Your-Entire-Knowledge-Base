@@ -309,3 +309,39 @@ class TestHealthReportsGeneration:
         body = client.get("/api/health").json()
         assert body["generator"] == "extractive"
         assert body["generation_model"] == "extractive-v1"
+
+
+class TestVerification:
+    def test_answers_are_verified_by_default(self, client: TestClient) -> None:
+        body = client.post("/api/ask", json={"query": "how is fusion done?"}).json()
+        assert body["verified"] is True
+        assert "verification_ms" in body["timings_ms"]
+
+    def test_extractive_answers_verify_clean(self, client: TestClient) -> None:
+        """Extractive output is verbatim from sources, so it must verify faithful."""
+        body = client.post(
+            "/api/ask", json={"query": "what does the damping constant k default to?"}
+        ).json()
+        if not body["refused"]:
+            assert body["faithfulness"] == 1.0
+            assert body["flagged_count"] == 0
+
+    def test_sentences_carry_verdicts(self, client: TestClient) -> None:
+        body = client.post("/api/ask", json={"query": "reciprocal rank fusion"}).json()
+        verdicts = {s["verdict"] for s in body["sentences"]}
+        assert verdicts <= {
+            "supported",
+            "partial",
+            "unsupported",
+            "uncited",
+            "not_a_claim",
+            None,
+        }
+
+    def test_verification_can_be_skipped(self, client: TestClient) -> None:
+        body = client.post("/api/ask", json={"query": "fusion", "verify": False}).json()
+        assert body["verified"] is False
+        assert body["faithfulness"] is None
+
+    def test_health_reports_the_verifier(self, client: TestClient) -> None:
+        assert client.get("/api/health").json()["verifier"] == "lexical-verify"

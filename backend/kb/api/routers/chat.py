@@ -50,7 +50,7 @@ def ask(payload: AskRequest, kb: KnowledgeBase = Depends(get_knowledge_base)) ->
     a bad answer can be attributed to retrieval or to generation instead of being
     guessed at.
     """
-    answer = kb.ask(payload.query, **_retrieval_overrides(payload))
+    answer = kb.ask(payload.query, verify=payload.verify, **_retrieval_overrides(payload))
     return AskResponse.from_answer(answer, include_retrieval=payload.include_retrieval)
 
 
@@ -69,7 +69,10 @@ def ask_stream(
 
     def events() -> Iterator[str]:
         try:
-            for delta, answer in kb.ask_stream(payload.query, **_retrieval_overrides(payload)):
+            stream = kb.ask_stream(
+                payload.query, verify=payload.verify, **_retrieval_overrides(payload)
+            )
+            for delta, answer in stream:
                 if answer is not None:
                     body = AskResponse.from_answer(
                         answer, include_retrieval=payload.include_retrieval
