@@ -31,9 +31,13 @@ cd Chat-With-Your-Entire-Knowledge-Base
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Ingest anything: a file, a directory, a glob
-kb ingest ./docs
-kb ingest ~/papers/attention-is-all-you-need.pdf
+# Ingest anything
+kb ingest ./docs                                  # directory, walked
+kb ingest ~/papers/attention-is-all-you-need.pdf  # PDF, per-page citations
+kb ingest ./Export-abc123                         # Notion export (or its .zip)
+kb ingest https://example.com/docs --crawl        # website, same-origin crawl
+kb ingest anshnt/kb --ref main                    # GitHub repo, code-aware
+kb ingest 'https://youtu.be/VIDEO_ID'             # YouTube transcript
 
 # Inspect the corpus
 kb stats
@@ -315,6 +319,20 @@ itself:
 
 Adding a source type means adding a `Locator` variant and a connector. Nothing
 in chunking, retrieval or generation changes — they never learn what a page is.
+
+Each connector does the work that source type actually needs, rather than calling
+`.get_text()` and hoping:
+
+| Source | The part that is not just parsing |
+|---|---|
+| **PDF** | One segment per page, so a chunk never straddles a page boundary. De-hyphenation (`retriev-\nal` → `retrieval`, or neither BM25 nor the embedder ever matches the word), and header/footer removal by frequency across pages rather than by position |
+| **Website** | Content selected by **text density** — the ratio of text to markup, since navigation is link-dense and text-sparse. Converted to Markdown, not plain text, so the heading structure survives into citation labels. `robots.txt` respected |
+| **GitHub** | Code chunked at **top-level declarations**, with the enclosing symbol on the locator: `fusion.py:88 (reciprocal_rank_fusion)`. Lock files, `node_modules` and minified bundles excluded |
+| **YouTube** | Grouped into **time windows**, because auto-captions have no punctuation for a text chunker to split on. Overlap measured in seconds, so the repeated span is real speech |
+| **Notion** | The 32-hex page id split out of the filename (kept, so citations link to `notion.so`), directory nesting reconstructed into `Engineering › Runbooks › On-call`, and CSV databases turned into `key: value` blocks — a raw row loses its field names and embeds terribly |
+
+See [`docs/connectors.md`](docs/connectors.md). `kb connectors` lists what your
+install can ingest.
 
 ## Architecture
 

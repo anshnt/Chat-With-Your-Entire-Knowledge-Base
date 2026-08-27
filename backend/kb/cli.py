@@ -121,6 +121,24 @@ def ingest(
     no_embed: Annotated[
         bool, typer.Option("--no-embed", help="Skip embedding (BM25 search still works)")
     ] = False,
+    crawl: Annotated[
+        bool, typer.Option("--crawl", help="Follow same-origin links from a URL")
+    ] = False,
+    max_pages: Annotated[int | None, typer.Option("--max-pages", help="Crawl page limit")] = None,
+    max_depth: Annotated[int | None, typer.Option("--max-depth", help="Crawl depth limit")] = None,
+    ref: Annotated[
+        str | None, typer.Option("--ref", help="Git branch, tag or commit for a repository")
+    ] = None,
+    path_filter: Annotated[
+        str | None, typer.Option("--path", help="Restrict a repository to this subdirectory")
+    ] = None,
+    token: Annotated[
+        str | None, typer.Option("--token", help="GitHub token, for private repositories")
+    ] = None,
+    local_path: Annotated[
+        Path | None,
+        typer.Option("--local", help="Index a local checkout but produce GitHub permalinks"),
+    ] = None,
 ) -> None:
     """Ingest sources into a collection.
 
@@ -132,6 +150,20 @@ def ingest(
     options: dict[str, object] = {}
     if title:
         options["title"] = title
+    if crawl:
+        options["crawl"] = True
+    if max_pages is not None:
+        options["max_pages"] = max_pages
+    if max_depth is not None:
+        options["max_depth"] = max_depth
+    if ref:
+        options["ref"] = ref
+    if path_filter:
+        options["path"] = path_filter
+    if token:
+        options["token"] = token
+    if local_path is not None:
+        options["local_path"] = str(local_path)
     try:
         report = knowledge_base.ingest_many(
             list(sources), collection=collection, embed=not no_embed, **options
@@ -591,6 +623,43 @@ def serve(
         port=port or settings.api_port,
         reload=reload,
         log_level=settings.log_level.lower(),
+    )
+
+
+@app.command()
+def connectors() -> None:
+    """List the registered connectors and what they accept."""
+    knowledge_base = _open()
+    accepts = {
+        "notion": "Notion export directory, .zip, or a single exported page",
+        "inline": "text passed directly (kb add-text)",
+        "markdown": ".md .markdown .mdx .mdown .mkd",
+        "pdf": ".pdf",
+        "text": ".txt .text .rst .log .csv .tsv",
+        "youtube": "youtube.com / youtu.be URL, or yt:VIDEO_ID",
+        "github": "owner/repo, gh:owner/repo, or a github.com URL",
+        "web": "any http(s) URL (use --crawl to follow links)",
+    }
+    table = Table(box=None)
+    table.add_column("connector", style="bold cyan")
+    table.add_column("locator", style="dim")
+    table.add_column("accepts")
+    locators = {
+        "notion": "notion",
+        "inline": "text",
+        "markdown": "text",
+        "pdf": "pdf",
+        "text": "text",
+        "youtube": "youtube",
+        "github": "github",
+        "web": "web",
+    }
+    for name in knowledge_base.registry.names():
+        table.add_row(name, locators.get(name, "—"), accepts.get(name, ""))
+    console.print(table)
+    console.print(
+        "\n[dim]precedence is top to bottom: the web connector claims any http(s) URL, "
+        "so youtube and github are registered ahead of it[/]"
     )
 
 
