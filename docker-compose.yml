@@ -1,0 +1,27 @@
+services:
+  api:
+    build:
+      context: .
+      args:
+        # Add hosted providers here, e.g. EXTRAS: "[llm,embeddings]"
+        EXTRAS: ""
+    ports:
+      - "8000:8000"
+    volumes:
+      - kb-data:/data
+      # Mount a corpus read-only and ingest it with:
+      #   docker compose exec api kb ingest /corpus
+      - ./docs:/corpus:ro
+    environment:
+      KB_DATA_DIR: /data
+      KB_LOG_LEVEL: INFO
+      # Defaults run fully offline. Uncomment to use hosted providers, and add
+      # the matching EXTRAS above.
+      # KB_EMBEDDING_PROVIDER: voyage
+      # VOYAGE_API_KEY: ${VOYAGE_API_KEY}
+      # KB_GENERATION_PROVIDER: anthropic
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    restart: unless-stopped
+
+volumes:
+  kb-data:
